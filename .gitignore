@@ -1,0 +1,14 @@
+./node_modules
+node_modules
+.env
+/SDK
+./SDK
+SDK
+/node_modules
+
+git init
+git add README.md
+git commit -m "first commit"
+git branch -M main
+git remote add origin https://github.com/eks-periencer/OMS_Server.git
+git push -u origin main

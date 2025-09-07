@@ -1,0 +1,12 @@
+openapi: 3.0.0
+info:
+  title: ISP Order Management System API
+  version: 1.0.0
+paths:
+  /api/auth/login:
+    post:
+      summary: User login
+      responses:
+        '200':
+          description: Successful login
+  # Add more endpoints as needed
