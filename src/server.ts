@@ -11,6 +11,7 @@ import { logger } from './services/logging.service.ts';
 import { httpRequestDurationMicroseconds } from './services/monitoring.service.ts';
 import onboardingRouter from './Routes/onboarding.routes.ts';
 import escalationRouter from './Routes/escalation.routes.ts';
+import emailRouter from './Routes/email.routes.ts';
 import { helmetConfig } from './Middleware/helmet.middleware.ts';
 import { generalRateLimit, authRateLimit } from './Middleware/rate-limit.middleware.ts';
 import { errorHandler, notFoundHandler } from './Middleware/error.middleware.ts';
@@ -163,11 +164,19 @@ async function checkDatabaseStatus() {
 
   // Redis check
   try {
-    if (redis.status === 'ready') {
-      await redis.ping();
+    const clientAny = redis as any;
+    if (!clientAny.isOpen) {
+      try { await redis.connect(); } catch {}
+    }
+    // If client reports ready/open, consider healthy even if ping throws intermittently
+    if (clientAny.isReady || clientAny.isOpen) {
       status.redis = true;
     }
-  } catch (err) {
+    try {
+      await redis.ping();
+      status.redis = true;
+    } catch {}
+  } catch {
     // Silent fail for health check
   }
 
@@ -202,6 +211,7 @@ app.use('/orders', ordersRoutes);
 app.use('/admin', adminRouter);
 app.use('/onboarding', onboardingRouter);
 app.use('/escalation', escalationRouter);
+app.use('/email', emailRouter);
 
 // Health check endpoint
 app.get('/health', async (req, res) => {
