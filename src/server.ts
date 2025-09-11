@@ -7,6 +7,9 @@ import authRoutes from './Routes/authRoutes.ts';
 import ordersRoutes from './Routes/ordersRoutes.ts'; 
 import { pgPool, redis, initializeFirebaseAdmin, connectMongoDB } from './Database/main.ts';
 import adminRouter from './Routes/admin.routes.ts';
+import rolesRouter from './Routes/roles.routes.ts';
+import userManagementRouter from './Routes/user-management.routes.ts';
+import applicationAdminRouter from './Routes/application-admin.routes.ts';
 import { logger } from './services/logging.service.ts';
 import { httpRequestDurationMicroseconds } from './services/monitoring.service.ts';
 import onboardingRouter from './Routes/onboarding.routes.ts';
@@ -14,256 +17,374 @@ import escalationRouter from './Routes/escalation.routes.ts';
 import { helmetConfig } from './Middleware/helmet.middleware.ts';
 import { generalRateLimit, authRateLimit } from './Middleware/rate-limit.middleware.ts';
 import { errorHandler, notFoundHandler } from './Middleware/error.middleware.ts';
-
+import { register } from 'prom-client';
+import { mongoClient, mongodb } from './Database/main.ts';
 
 dotenv.config();
 
-const app = express();
-const PORT = process.env.PORT;
-
-// ---------- Utility Logger ----------
-function logStatus(service: string, status: boolean, message: string = '') {
-  const label = status ? chalk.green.bold('[OK]') : chalk.red.bold('[FAIL]');
-  console.log(`${new Date().toISOString()} ${label} ${service}: ${message}`);
+interface ServiceHealth {
+  name: string;
+  status: 'healthy' | 'degraded' | 'unhealthy';
+  latency?: number;
+  details?: string;
+  lastCheck: Date;
 }
 
-// ---------- Initialize Services ----------
-async function initializeServices() {
-  // Firebase
-  try {
-    await initializeFirebaseAdmin();
-    logStatus('Firebase', true, 'Initialized successfully');
-  } catch (err) {
-    logStatus('Firebase', false, `Initialization failed: ${err}`);
-  }
-
-  // MongoDB
-  try {
-    await connectMongoDB();
-    logStatus('MongoDB', true, 'Connected successfully');
-  } catch (err: unknown) {
-    logStatus('MongoDB', false, `Connection failed: ${err}`);
-  }
-
-  // Redis - Fixed connection logic
-  try {
-    // Set up event listeners first
-    redis.on('error', (err: unknown) => {
-      logStatus('Redis', false, `Client error: ${err}`);
-    });
-    
-    redis.on('connect', () => {
-      logStatus('Redis', true, 'Client connected');
-    });
-
-    redis.on('ready', () => {
-      logStatus('Redis', true, 'Client ready');
-    });
-
-    redis.on('close', () => {
-      logStatus('Redis', false, 'Connection closed');
-    });
-
-    // Connect if not already connected
-    if (redis.status !== 'connecting' && redis.status !== 'connected' && redis.status !== 'ready') {
-      await redis.connect();
-      logStatus('Redis', true, 'Connected successfully');
-    } else {
-      logStatus('Redis', true, `Already in state: ${redis.status}`);
-    }
-  } catch (err: unknown) {
-    logStatus('Redis', false, `Connection error: ${err}`);
-  }
-
-  // PostgreSQL
-  try {
-    const client = await pgPool.connect();
-    await client.query('SELECT 1');
-    client.release();
-    logStatus('PostgreSQL', true, 'Connection established');
-  } catch (err) {
-    logStatus('PostgreSQL', false, `Connection failed: ${err}`);
-  }
-}
-
-// Initialize services
-initializeServices();
-
-// ---------- Middleware ----------
-app.use(helmetConfig);
-app.use(cors());
-app.use(compression());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
-app.use(generalRateLimit);
-
-// Request logging
-app.use((req, res, next) => {
-  const start = Date.now();
-  res.on('finish', () => {
-    const duration = Date.now() - start;
-    console.log(
-      chalk.cyan(
-        `${new Date().toISOString()} ${req.method} ${req.url} ${res.statusCode} ${duration}ms`
-      )
-    );
-  });
-  next();
-});
-
-// Attach shared db/redis/mongo to app
-app.set('pgPool', pgPool);
-app.set('redis', redis);
-
-// Import mongoClient after the main import
-import { mongoClient, mongodb } from './Database/main.ts';
-app.set('mongoClient', mongoClient);
-
-// Prometheus metrics middleware
-app.use((req, res, next) => {
-  const start = Date.now();
-  res.on('finish', () => {
-    const duration = Date.now() - start;
-    httpRequestDurationMicroseconds
-      .labels(req.method, req.path, String(res.statusCode))
-      .observe(duration);
-  });
-  next();
-});
-
-// Winston logging middleware
-app.use((req, res, next) => {
-  logger.info({
-    time: new Date().toISOString(),
-    method: req.method,
-    url: req.url,
-    ip: req.ip,
-  });
-  next();
-});
-
-// ---------- Improved Database Health Checks ----------
-async function checkDatabaseStatus() {
-  const status = {
-    postgres: false,
-    redis: false,
-    mongo: false,
-    firebase: true, // Assuming Firebase is fine if init didn't fail
+interface ServerState {
+  isReady: boolean;
+  startTime: Date;
+  services: Record<string, ServiceHealth>;
+  metrics: {
+    totalRequests: number;
+    activeConnections: number;
   };
-
-  // PostgreSQL check
-  try {
-    const client = await pgPool.connect();
-    await client.query('SELECT 1');
-    client.release();
-    status.postgres = true;
-  } catch (err) {
-    // Silent fail for health check
-  }
-
-  // Redis check
-  try {
-    if (redis.status === 'ready') {
-      await redis.ping();
-      status.redis = true;
-    }
-  } catch (err) {
-    // Silent fail for health check
-  }
-
-  // MongoDB check
-  try {
-    if (mongoClient && mongoClient.topology && mongoClient.topology.isConnected()) {
-      status.mongo = true;
-    } else if (mongodb) {
-      await mongodb.admin().ping();
-      status.mongo = true;
-    }
-  } catch (err) {
-    // Silent fail for health check
-  }
-
-  return status;
 }
 
-// Run health check every 30s
-setInterval(async () => {
-  const dbStatus = await checkDatabaseStatus();
-  console.log(chalk.yellow('\n=== Database Health Report ==='));
-  Object.entries(dbStatus).forEach(([db, ok]) =>
-    logStatus(db.charAt(0).toUpperCase() + db.slice(1), ok, ok ? 'Healthy' : 'Unhealthy')
-  );
-  console.log(chalk.yellow('==============================\n'));
-}, 30000);
+class RobustServer {
+  private app: express.Application;
+  private server: any;
+  private readonly port: number;
+  private state: ServerState;
+  private healthCheckInterval: NodeJS.Timeout | null = null;
+  private readonly maxStartupTime = 30000; // 30 seconds
 
-// ---------- Routes ----------
-app.use('/auth', authRateLimit, authRoutes);
-app.use('/orders', ordersRoutes);
-app.use('/admin', adminRouter);
-app.use('/onboarding', onboardingRouter);
-app.use('/escalation', escalationRouter);
-
-// Health check endpoint
-app.get('/health', async (req, res) => {
-  const dbStatus = await checkDatabaseStatus();
-  res.json({ 
-    success: true, 
-    status: 'healthy',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    services: dbStatus
-  });
-});
-
-// Basic info endpoint
-app.get('/', (req, res) => {
-  res.json({
-    name: 'OMS Backend API',
-    version: '1.0.0',
-    status: 'running',
-    timestamp: new Date().toISOString()
-  });
-});
-
-// Monitoring endpoint for Prometheus
-import { register } from 'prom-client';
-app.get('/metrics', async (req, res) => {
-  res.set('Content-Type', 'text/plain');
-  res.end(await register.metrics());
-});
-
-// Error handling middleware (must be last)
-app.use(notFoundHandler);
-app.use(errorHandler);
-
-// ---------- Graceful Shutdown ----------
-process.on('SIGTERM', async () => {
-  console.log(chalk.yellow('🛑 SIGTERM received, shutting down gracefully'));
-  try {
-    await pgPool.end();
-    await redis.quit();
-    if (mongoClient) await mongoClient.close();
-  } catch (err) {
-    console.error('Error during shutdown:', err);
+  constructor() {
+    this.app = express();
+    this.port = parseInt(process.env.PORT || '3003');
+    this.state = {
+      isReady: false,
+      startTime: new Date(),
+      services: {},
+      metrics: { totalRequests: 0, activeConnections: 0 }
+    };
   }
-  process.exit(0);
-});
 
-process.on('SIGINT', async () => {
-  console.log(chalk.yellow('🛑 SIGINT received, shutting down gracefully'));
-  try {
-    await pgPool.end();
-    await redis.quit();
-    if (mongoClient) await mongoClient.close();
-  } catch (err) {
-    console.error('Error during shutdown:', err);
+  private log(level: 'info' | 'success' | 'error' | 'warn', service: string, message: string, latency?: number) {
+    const timestamp = new Date().toISOString();
+    const colors = {
+      info: chalk.blue,
+      success: chalk.green,
+      error: chalk.red,
+      warn: chalk.yellow
+    };
+    
+    const prefix = {
+      info: '[INFO]',
+      success: '[✓]',
+      error: '[✗]', 
+      warn: '[⚠]'
+    }[level];
+
+    const latencyStr = latency !== undefined ? chalk.gray(`(${latency}ms)`) : '';
+    console.log(`${chalk.gray(timestamp)} ${colors[level].bold(prefix)} ${chalk.white.bold(service)}: ${message} ${latencyStr}`);
   }
-  process.exit(0);
+
+  private async checkService(name: string, checkFn: () => Promise<void>): Promise<ServiceHealth> {
+    const start = Date.now();
+    try {
+      await checkFn();
+      const latency = Date.now() - start;
+      const health: ServiceHealth = {
+        name,
+        status: latency > 1000 ? 'degraded' : 'healthy',
+        latency,
+        lastCheck: new Date()
+      };
+      
+      if (latency > 1000) {
+        health.details = 'High latency detected';
+      }
+      
+      return health;
+    } catch (error) {
+      return {
+        name,
+        status: 'unhealthy',
+        latency: Date.now() - start,
+        details: error instanceof Error ? error.message : 'Unknown error',
+        lastCheck: new Date()
+      };
+    }
+  }
+
+  private async initializeServices(): Promise<void> {
+    this.log('info', 'System', 'Initializing services...');
+    const initPromises = [];
+
+    // Firebase
+    initPromises.push(
+      this.checkService('Firebase', async () => {
+        await initializeFirebaseAdmin();
+      }).then(health => {
+        this.state.services.firebase = health;
+        this.log(health.status === 'healthy' ? 'success' : 'error', 'Firebase', 
+          health.status === 'healthy' ? 'Ready' : health.details || 'Failed', health.latency);
+      })
+    );
+
+    // MongoDB
+    initPromises.push(
+      this.checkService('MongoDB', async () => {
+        await connectMongoDB();
+      }).then(health => {
+        this.state.services.mongodb = health;
+        this.log(health.status === 'healthy' ? 'success' : 'error', 'MongoDB', 
+          health.status === 'healthy' ? 'Connected' : health.details || 'Failed', health.latency);
+      })
+    );
+
+    // Redis
+    initPromises.push(
+      this.checkService('Redis', async () => {
+        const r: any = redis as any;
+        if (r.status !== 'ready') {
+          await r.connect();
+        }
+        await r.ping();
+      }).then(health => {
+        this.state.services.redis = health;
+        this.log(health.status === 'healthy' ? 'success' : 'error', 'Redis', 
+          health.status === 'healthy' ? 'Ready' : health.details || 'Failed', health.latency);
+      })
+    );
+
+    // PostgreSQL
+    initPromises.push(
+      this.checkService('PostgreSQL', async () => {
+        const client = await pgPool.connect();
+        await client.query('SELECT 1');
+        client.release();
+      }).then(health => {
+        this.state.services.postgresql = health;
+        this.log(health.status === 'healthy' ? 'success' : 'error', 'PostgreSQL', 
+          health.status === 'healthy' ? 'Connected' : health.details || 'Failed', health.latency);
+      })
+    );
+
+    await Promise.allSettled(initPromises);
+    
+    const healthyServices = Object.values(this.state.services).filter(s => s.status === 'healthy').length;
+    const totalServices = Object.keys(this.state.services).length;
+    
+    if (healthyServices === totalServices) {
+      this.log('success', 'System', `All ${totalServices} services initialized successfully`);
+    } else {
+      this.log('warn', 'System', `${healthyServices}/${totalServices} services healthy`);
+    }
+  }
+
+  private setupMiddleware(): void {
+    // Security and performance
+    this.app.use(helmetConfig);
+    this.app.use(cors({
+      origin: process.env.CORS_ORIGIN?.split(',') || true,
+      credentials: true
+    }));
+    this.app.use(compression());
+    this.app.use(express.json({ limit: '10mb' }));
+    this.app.use(express.urlencoded({ extended: true }));
+    this.app.use(generalRateLimit);
+
+    // Request tracking
+    this.app.use((req, res, next) => {
+      this.state.metrics.totalRequests++;
+      this.state.metrics.activeConnections++;
+      
+      const start = Date.now();
+      res.on('finish', () => {
+        this.state.metrics.activeConnections--;
+        const duration = Date.now() - start;
+        
+        // Prometheus metrics
+        httpRequestDurationMicroseconds
+          .labels(req.method, req.path, String(res.statusCode))
+          .observe(duration);
+
+        // Winston logging
+        logger.info({
+          time: new Date().toISOString(),
+          method: req.method,
+          url: req.url,
+          status: res.statusCode,
+          duration,
+          ip: req.ip,
+        });
+      });
+      next();
+    });
+
+    // Database connections
+    this.app.set('pgPool', pgPool);
+    this.app.set('redis', redis);
+    this.app.set('mongoClient', mongoClient);
+  }
+
+  private setupRoutes(): void {
+    // API Routes
+    this.app.use('/auth', authRateLimit, authRoutes);
+    this.app.use('/orders', ordersRoutes);
+    this.app.use('/admin', adminRouter);
+    this.app.use('/admin/roles', rolesRouter);
+    this.app.use('/user-management', userManagementRouter);
+    this.app.use('/application-admin', applicationAdminRouter);
+    this.app.use('/onboarding', onboardingRouter);
+    this.app.use('/escalation', escalationRouter);
+
+    // Health endpoints
+    this.app.get('/health', async (req, res) => {
+      const overallHealth = Object.values(this.state.services).every(s => s.status === 'healthy');
+      res.status(overallHealth ? 200 : 503).json({
+        status: overallHealth ? 'healthy' : 'degraded',
+        ready: this.state.isReady,
+        uptime: Math.floor((Date.now() - this.state.startTime.getTime()) / 1000),
+        services: this.state.services,
+        metrics: this.state.metrics,
+        timestamp: new Date().toISOString()
+      });
+    });
+
+    this.app.get('/ready', (req, res) => {
+      res.status(this.state.isReady ? 200 : 503).json({
+        ready: this.state.isReady,
+        message: this.state.isReady ? 'Server is ready' : 'Server is starting up'
+      });
+    });
+
+    // Info endpoint
+    this.app.get('/', (req, res) => {
+      res.json({
+        name: 'OMS Backend API',
+        version: '1.0.0',
+        status: this.state.isReady ? 'ready' : 'starting',
+        uptime: Math.floor((Date.now() - this.state.startTime.getTime()) / 1000),
+        endpoint: `http://localhost:${this.port}`,
+        timestamp: new Date().toISOString()
+      });
+    });
+
+    // Metrics endpoint
+    this.app.get('/metrics', async (req, res) => {
+      res.set('Content-Type', 'text/plain');
+      res.end(await register.metrics());
+    });
+
+    // Error handling
+    this.app.use(notFoundHandler);
+    this.app.use(errorHandler);
+  }
+
+  private startHealthMonitoring(): void {
+    this.healthCheckInterval = setInterval(async () => {
+      const checks = await Promise.allSettled([
+        this.checkService('PostgreSQL', async () => {
+          const client = await pgPool.connect();
+          await client.query('SELECT 1');
+          client.release();
+        }),
+        this.checkService('Redis', async () => {
+          const r: any = redis as any;
+          await r.ping();
+        }),
+        this.checkService('MongoDB', async () => {
+          if (mongodb) {
+            await mongodb.admin().ping();
+          } else {
+            throw new Error('MongoDB not connected');
+          }
+        })
+      ]);
+
+      checks.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
+          const names = ['postgresql', 'redis', 'mongodb'] as const;
+          const serviceName = names[index] ?? 'unknown';
+          this.state.services[serviceName] = result.value;
+        }
+      });
+
+      const healthyCount = Object.values(this.state.services).filter(s => s.status === 'healthy').length;
+      const totalCount = Object.keys(this.state.services).length;
+      
+      if (healthyCount < totalCount) {
+        this.log('warn', 'HealthCheck', `${healthyCount}/${totalCount} services healthy`);
+      }
+    }, 15000); // Check every 15 seconds
+  }
+
+  private setupGracefulShutdown(): void {
+    const shutdown = async (signal: string) => {
+      this.log('warn', 'System', `${signal} received, shutting down gracefully...`);
+      
+      if (this.healthCheckInterval) clearInterval(this.healthCheckInterval);
+      
+      if (this.server) {
+        this.server.close(() => {
+          this.log('info', 'System', 'HTTP server closed');
+        });
+      }
+
+      try {
+        await Promise.allSettled([
+          pgPool.end(),
+          redis.quit(),
+          mongoClient?.close()
+        ]);
+        this.log('success', 'System', 'All connections closed successfully');
+      } catch (error) {
+        this.log('error', 'System', `Error during shutdown: ${error}`);
+      }
+      
+      process.exit(0);
+    };
+
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
+  }
+
+  public async start(): Promise<void> {
+    console.log(chalk.cyan.bold('\n🚀 OMS Backend Server Starting...\n'));
+    
+    const startupTimeout = setTimeout(() => {
+      this.log('error', 'System', 'Startup timeout exceeded');
+      process.exit(1);
+    }, this.maxStartupTime);
+
+    try {
+      this.setupMiddleware();
+      this.setupRoutes();
+      this.setupGracefulShutdown();
+      
+      await this.initializeServices();
+      
+      this.server = this.app.listen(this.port, () => {
+        clearTimeout(startupTimeout);
+        this.state.isReady = true;
+        
+        console.log(chalk.green.bold('\n✅ SERVER READY\n'));
+        this.log('success', 'HTTP Server', `Listening on port ${this.port}`);
+        this.log('info', 'Endpoints', `http://localhost:${this.port}`);
+        this.log('info', 'Health Check', `http://localhost:${this.port}/health`);
+        this.log('info', 'Metrics', `http://localhost:${this.port}/metrics`);
+        
+        const bootTime = Date.now() - this.state.startTime.getTime();
+        this.log('success', 'System', `Ready in ${bootTime}ms`);
+        
+        this.startHealthMonitoring();
+      });
+
+    } catch (error) {
+      clearTimeout(startupTimeout);
+      this.log('error', 'System', `Failed to start: ${error}`);
+      process.exit(1);
+    }
+  }
+}
+
+// Start the server
+const server = new RobustServer();
+server.start().catch(error => {
+  console.error(chalk.red.bold('Failed to start server:'), error);
+  process.exit(1);
 });
 
-// ---------- Start Server ----------
-app.listen(PORT, () => {
-  console.log(chalk.magenta(`🚀 Server is running at http://localhost:${PORT}`));
-});
-
-export default app;
+export default server;

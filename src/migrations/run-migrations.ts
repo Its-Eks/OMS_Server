@@ -1,6 +1,10 @@
 import { Pool } from 'pg';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 const pgPool = new Pool({
   host: process.env.POSTGRES_HOST || 'localhost',
@@ -10,12 +14,16 @@ const pgPool = new Pool({
   password: process.env.POSTGRES_PASSWORD,
 });
 
+// Handle ESM: __dirname is not defined by default
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 async function runMigrations() {
   try {
     console.log('Running database migrations...');
     
     // Read and execute migration files
-    const migrationDir = path.join(__dirname, '..', 'migrations');
+    const migrationDir = path.join(__dirname); // this file lives in src/migrations
     const files = fs.readdirSync(migrationDir).filter(f => f.endsWith('.sql')).sort();
     
     for (const file of files) {
