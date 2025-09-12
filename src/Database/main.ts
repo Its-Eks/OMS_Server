@@ -10,17 +10,41 @@ dotenv.config()
 // ---------- PostgreSQL ----------
 const { Pool } = pkg;
 
+const useSSL = process.env.POSTGRES_SSL === 'true';
+
+console.log('[Postgres Config]');
+console.log('  HOST:', process.env.POSTGRES_HOST);
+console.log('  USER:', process.env.POSTGRES_USER);
+console.log('  DATABASE:', process.env.POSTGRES_DB);
+console.log('  PORT:', process.env.POSTGRES_PORT);
+console.log('  SSL:', useSSL);
+
 export const pgPool = new Pool({
-  host: process.env.POSTGRES_HOST || 'localhost',
-  user: process.env.POSTGRES_USER || 'postgres',
+  host: process.env.POSTGRES_HOST,
+  user: process.env.POSTGRES_USER,
   password: process.env.POSTGRES_PASSWORD,
   database: process.env.POSTGRES_DB,
-  port: parseInt(process.env.POSTGRES_PORT || '5432', 10),
+  port: parseInt(process.env.POSTGRES_PORT, 10),
+  ssl: useSSL ? { rejectUnauthorized: false } : undefined,
+  max: 20,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 2000,
 });
 
 // ---------- Redis ----------
+const redisUrl = process.env.REDIS_URL;
+try {
+  const parsed = redisUrl ? new URL(redisUrl) : null;
+  const maskedAuth = parsed?.password ? parsed.password.slice(0, 4) + '...' : undefined;
+  console.log('[Redis Config]');
+  console.log('  URL:', redisUrl ? `${parsed?.protocol}//${parsed?.username ? parsed.username + ':' : ''}${maskedAuth ? '****@' : ''}${parsed?.host}` : undefined);
+  console.log('  HOST:', parsed?.hostname);
+  console.log('  PORT:', parsed?.port);
+  console.log('  TLS:', parsed?.protocol === 'rediss:');
+} catch {}
+
 export const redis = createClient({
-  url: process.env.REDIS_URL || 'redis://localhost:6379',
+  url: redisUrl ?? '',
 });
 
 // ---------- MongoDB ----------

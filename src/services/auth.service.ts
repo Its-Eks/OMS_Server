@@ -49,7 +49,7 @@ export class AuthService {
 		if (!emailDomain || !allowedDomains.includes(emailDomain)) {
 			throw new Error('Only Xnext.co.za and Mooya.co.za email domains are allowed.');
 		}
-		// Check if user is pre-registered in PostgreSQL
+		// Check if user is pre-registered in PostgreSQL - NOW INCLUDES ROLE INFO
 		const existingUser = await this.findUserByEmail(decodedToken.email);
 		if (!existingUser) {
 			throw new Error('Account not found. Please contact your system administrator.');
@@ -331,15 +331,27 @@ export class AuthService {
 		}
 	}
 
-	// Helper: find user by Firebase UID
+	// Helper: find user by Firebase UID - UPDATED to include role info
 	private async findUserByFirebaseUid(uid: string): Promise<User | null> {
-		const result = await this.db.query('SELECT * FROM users WHERE firebase_uid = $1', [uid]);
+		const result = await this.db.query(
+			`SELECT u.*, r.name AS role_name, r.permissions AS role_permissions
+			 FROM users u
+			 LEFT JOIN roles r ON r.id = u.role_id
+			 WHERE u.firebase_uid = $1 LIMIT 1`,
+			[uid]
+		);
 		return result.rows[0] || null;
 	}
 
-	// Helper: find user by email
+	// Helper: find user by email - UPDATED to include role info
 	private async findUserByEmail(email: string): Promise<User | null> {
-		const result = await this.db.query('SELECT * FROM users WHERE email = $1', [email]);
+		const result = await this.db.query(
+			`SELECT u.*, r.name AS role_name, r.permissions AS role_permissions
+			 FROM users u
+			 LEFT JOIN roles r ON r.id = u.role_id
+			 WHERE u.email = $1 LIMIT 1`,
+			[email]
+		);
 		return result.rows[0] || null;
 	}
 
@@ -355,19 +367,20 @@ export class AuthService {
 		return result.rows[0] || null;
 	}
 
-	// Helper: link Firebase account
+	// Helper: link Firebase account - UPDATED to return user with role info
 	private async linkFirebaseAccount(userId: string, decodedToken: any): Promise<User> {
 		await this.db.query('UPDATE users SET firebase_uid = $1 WHERE id = $2', [decodedToken.uid, userId]);
 		return (await this.findUserByFirebaseUid(decodedToken.uid))!;
 	}
 
-	// Helper: create user from Google
+	// Helper: create user from Google - UPDATED to return user with role info
 	private async createUserFromGoogle(decodedToken: any): Promise<User> {
 		const result = await this.db.query(
 			`INSERT INTO users (email, first_name, last_name, firebase_uid, email_verified, is_active, login_method) VALUES ($1, $2, $3, $4, $5, true, 'google') RETURNING *`,
 			[decodedToken.email, decodedToken.name?.split(' ')[0] || '', decodedToken.name?.split(' ')[1] || '', decodedToken.uid, true]
 		);
-		return result.rows[0];
+		// After creating user, fetch with role info
+		return await this.findUserById(result.rows[0].id) || result.rows[0];
 	}
 
 	// Helper: update last login
