@@ -1,11 +1,14 @@
 import { Router } from 'express';
-import { createUser, updateUser, deactivateUser, getAuditLogs } from '../controllers/admin.controller.ts';
+import { authenticate, authorize } from '../Middleware/authMiddleware.ts';
+import { createUser, updateUser, deactivateUser, getAuditLogs } from '../Controllers/admin.controller.ts';
 
 const router = Router();
 
-router.post('/users', createUser);
-router.put('/users/:id', updateUser);
-router.delete('/users/:id', deactivateUser);
-router.get('/audit-logs', getAuditLogs);
+router.use(authenticate);
+
+router.post('/users', authorize(['admin:manage_users']), createUser);
+router.put('/users/:id', authorize(['admin:manage_users']), updateUser);
+router.delete('/users/:id', authorize(['admin:manage_users']), deactivateUser);
+router.get('/audit-logs', authorize(['admin:view_audit_logs']), getAuditLogs);
 
 export default router;

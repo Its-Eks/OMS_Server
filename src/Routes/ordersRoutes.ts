@@ -7,7 +7,7 @@ const router = Router();
 // Protected routes
 router.use(authenticate);
 
-router.get('/', getOrders);
-router.post('/', createOrder);
+router.get('/', authorize(['orders:read']), getOrders);
+router.post('/', authorize(['orders:create']), createOrder);
 
 export default router;

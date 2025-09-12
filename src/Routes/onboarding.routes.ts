@@ -1,9 +1,14 @@
 import { Router } from 'express';
-// TODO: Import onboarding controller functions
+import { authenticate, authorize } from '../Middleware/authMiddleware.ts';
+import { initiateOnboarding, getCustomerOnboarding, completeOnboardingStep, getTrialCustomers } from '../Controllers/onboarding.controller.ts';
+
 const router = Router();
 
-router.post('/start', (req, res) => res.json({ success: true, message: 'Onboarding started (stub)' }));
-router.put('/progress', (req, res) => res.json({ success: true, message: 'Onboarding progress updated (stub)' }));
-router.get('/status/:customerId', (req, res) => res.json({ success: true, status: 'In progress (stub)' }));
+router.use(authenticate);
+
+router.post('/initiate', authorize(['onboarding:initiate']), initiateOnboarding);
+router.get('/customers/:customerId', authorize(['onboarding:manage']), getCustomerOnboarding);
+router.put('/:onboardingId/step/:stepId/complete', authorize(['onboarding:manage']), completeOnboardingStep);
+router.get('/trial-customers', authorize(['onboarding:view_trials']), getTrialCustomers);
 
 export default router;

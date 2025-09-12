@@ -4,11 +4,15 @@ import { registerUser } from '../Controllers/RegisterController.ts';
 import { generateEmailVerificationToken, verifyEmailToken } from '../Controllers/VerificationController.ts';
 import { generatePasswordResetToken, resetPassword } from '../Controllers/PasswordResetController.ts';
 import { loginUser } from '../Controllers/auth.controller.ts';
+import { googleAuth } from '../Controllers/auth.controller.ts';
+import { refreshToken, logout, setPassword } from '../Controllers/auth.controller.ts';
+import cookieParser from 'cookie-parser';
 
 const router = Router();
+router.use(cookieParser());
 
-// Registration endpoint
-router.post('/register', async (req, res) => {
+// Admin-only registration endpoint
+router.post('/register', authenticate, authorize(['admin:manage_users']), async (req, res) => {
   const db = req.app.get('pgPool');
   const redis = req.app.get('redis');
   try {
@@ -24,6 +28,16 @@ router.post('/register', async (req, res) => {
 
 // Unified login endpoint
 router.post('/login', loginUser);
+
+//0auth route
+router.post('/google-login', googleAuth);
+
+// Token refresh + logout
+router.post('/refresh', refreshToken);
+router.post('/logout', logout);
+
+// Set password (for users without password)
+router.post('/set-password', authenticate, setPassword);
 
 // Email verification endpoint
 router.get('/verify-email', async (req, res) => {
