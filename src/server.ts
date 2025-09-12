@@ -14,6 +14,7 @@ import { logger } from './services/logging.service.ts';
 import { httpRequestDurationMicroseconds } from './services/monitoring.service.ts';
 import onboardingRouter from './Routes/onboarding.routes.ts';
 import escalationRouter from './Routes/escalation.routes.ts';
+import emailRouter from './Routes/email.routes.ts';
 import { helmetConfig } from './Middleware/helmet.middleware.ts';
 import { generalRateLimit, authRateLimit } from './Middleware/rate-limit.middleware.ts';
 import { errorHandler, notFoundHandler } from './Middleware/error.middleware.ts';
@@ -229,6 +230,7 @@ class RobustServer {
     this.app.use('/application-admin', applicationAdminRouter);
     this.app.use('/onboarding', onboardingRouter);
     this.app.use('/escalation', escalationRouter);
+    this.app.use('/email', emailRouter);
 
     // Health endpoints
     this.app.get('/health', async (req, res) => {
