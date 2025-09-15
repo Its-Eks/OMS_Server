@@ -56,7 +56,14 @@ export class CustomerHybridService {
 
   constructor(pgPool: Pool) {
     this.pgPool = pgPool;
-    this.onboardingServiceUrl = process.env.ONBOARDING_SERVICE_URL || 'http://localhost:3004';
+    const raw = process.env.ONBOARDING_SERVICE_URL || 'https://oms-server-ntlv.onrender.com';
+    // Normalize base URL: remove trailing slashes
+    this.onboardingServiceUrl = raw.replace(/\/+$/g, '');
+  }
+
+  private buildUrl(path: string): string {
+    const cleanPath = (path || '').replace(/^\/+/, '/');
+    return `${this.onboardingServiceUrl}${cleanPath.startsWith('/') ? '' : '/'}${cleanPath}`;
   }
 
   // Get all customers (handled by main server)
@@ -230,20 +237,33 @@ export class CustomerHybridService {
 
     let lastError: any = null;
     for (const path of candidates) {
+      const url = this.buildUrl(path);
       try {
-        const url = `${this.onboardingServiceUrl}${path}`;
-        const response = await axios.post(url, customerData, { headers, timeout: 10000 });
+        const response = await axios.post(url, customerData, { headers, timeout: 15000 });
         if (response.status >= 200 && response.status < 300 && response.data?.success !== false) {
           return response.data.data ?? response.data;
         }
-        lastError = new Error(response.data?.error?.message || `Unexpected response from ${path}`);
+        lastError = new Error(response.data?.error?.message || `Unexpected response from ${url}`);
       } catch (error: any) {
-        if (error?.response?.status === 404) {
+        // Retry once on 502/503 (Render cold start / routing)
+        const status = error?.response?.status;
+        if (status === 502 || status === 503) {
+          try {
+            await new Promise(r => setTimeout(r, 800));
+            const retryResp = await axios.post(url, customerData, { headers, timeout: 15000 });
+            if (retryResp.status >= 200 && retryResp.status < 300 && retryResp.data?.success !== false) {
+              return retryResp.data.data ?? retryResp.data;
+            }
+          } catch (retryErr: any) {
+            lastError = retryErr;
+          }
+        } else if (status === 404) {
           lastError = new Error('Onboarding service endpoint not found');
-          continue;
+          continue; // try next candidate
+        } else {
+          lastError = error;
+          break; // non-retryable
         }
-        lastError = error;
-        break;
       }
     }
 
