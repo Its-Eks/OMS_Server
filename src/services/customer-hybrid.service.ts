@@ -56,8 +56,7 @@ export class CustomerHybridService {
 
   constructor(pgPool: Pool) {
     this.pgPool = pgPool;
-    const raw = process.env.ONBOARDING_SERVICE_URL || 'https://oms-server-ntlv.onrender.com';
-    // Normalize base URL: remove trailing slashes
+    const raw = process.env.ONBOARDING_SERVICE_URL || 'https://microservices-oms.onrender.com';
     this.onboardingServiceUrl = raw.replace(/\/+$/g, '');
   }
 
@@ -224,14 +223,10 @@ export class CustomerHybridService {
   // Create customer (proxied to onboarding service)
   async createCustomer(customerData: CreateCustomerData): Promise<Customer> {
     const customPath = process.env.ONBOARDING_CUSTOMER_CREATE_PATH;
+    // Only use the canonical path unless explicitly overridden via env
     const candidates = [
-      customPath,
-      '/api/onboarding/customers',
-      '/api/customers',
-      '/customers',
-      '/api/onboarding/customer',
-      '/onboarding/customers'
-    ].filter(Boolean) as string[];
+      customPath || '/api/onboarding/customers'
+    ];
 
     const headers = { 'Content-Type': 'application/json' } as Record<string, string>;
 
