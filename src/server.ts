@@ -20,6 +20,7 @@ import { generalRateLimit, authRateLimit } from './Middleware/rate-limit.middlew
 import { errorHandler, notFoundHandler } from './Middleware/error.middleware.ts';
 import { register } from 'prom-client';
 import { mongoClient, mongodb } from './Database/main.ts';
+import customerRouter from './Routes/customer-hybrid.routes.ts';
 
 dotenv.config();
 
@@ -231,6 +232,7 @@ class RobustServer {
     this.app.use('/onboarding', onboardingRouter);
     this.app.use('/escalation', escalationRouter);
     this.app.use('/email', emailRouter);
+    this.app.use('/customers', customerRouter);
 
     // Health endpoints
     this.app.get('/health', async (req, res) => {
