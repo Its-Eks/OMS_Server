@@ -316,5 +316,3 @@ export async function deleteUserAdmin(req: Request, res: Response) {
     res.status(400).json({ success: false, error: { message: error.message } });
   }
 }
-
-
