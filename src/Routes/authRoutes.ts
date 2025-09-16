@@ -20,7 +20,7 @@ router.post('/register', authenticate, authorize(['admin:manage_users']), async 
     const userId = await registerUser(db, redis, req.body);
     // Generate verification token and send email
     const token = await generateEmailVerificationToken(db, userId);
-    const appUrl = process.env.FRONTEND_URL || process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`;
+    const appUrl = process.env.FRONTEND_URL || process.env.APP_URL || `https://oms-client-x2nv.vercel.app/${process.env.PORT || 3000}`;
     const verifyLink = `${appUrl.replace(/\/$/, '')}/verify-email?token=${encodeURIComponent(token)}`;
 
     let emailPreviewUrl: string | undefined;
@@ -92,7 +92,7 @@ router.get('/verify-email', async (req, res) => {
     if (userEmail) {
       try {
         const resetToken = await generatePasswordResetToken(db, userEmail);
-        const appUrl = process.env.FRONTEND_URL || process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`;
+        const appUrl = process.env.FRONTEND_URL || process.env.APP_URL || `https://oms-client-x2nv.vercel.app/${process.env.PORT || 3000}`;
         const setPasswordLink = `${appUrl.replace(/\/$/, '')}/set-password?token=${encodeURIComponent(resetToken)}`;
         const passwordSetupHtml = [
           `<p>Hi ${firstName},</p>`,
@@ -126,7 +126,7 @@ router.post('/resend-verification', async (req, res) => {
     if (result.rows.length === 0) throw new Error('User not found');
     const userId = result.rows[0].id;
     const token = await generateEmailVerificationToken(db, userId);
-    const appUrl = process.env.FRONTEND_URL || process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`;
+    const appUrl = process.env.FRONTEND_URL || process.env.APP_URL || `https://oms-client-x2nv.vercel.app/${process.env.PORT || 3000}`;
     const verifyLink = `${appUrl.replace(/\/$/, '')}/verify-email?token=${encodeURIComponent(token)}`;
 
     try {
@@ -157,7 +157,7 @@ router.post('/forgot-password', async (req, res) => {
   try {
     const { email } = req.body;
     const token = await generatePasswordResetToken(db, email);
-    const appUrl = process.env.FRONTEND_URL || process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`;
+      const appUrl = process.env.FRONTEND_URL || process.env.APP_URL || `https://oms-client-x2nv.vercel.app/${process.env.PORT || 3000}`;
     const resetLink = `${appUrl.replace(/\/$/, '')}/reset-password?token=${encodeURIComponent(token)}`;
 
     try {

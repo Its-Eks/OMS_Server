@@ -164,7 +164,7 @@ export async function createUserAdmin(req: Request, res: Response) {
     try {
       const token = await generateEmailVerificationToken(db, userId);
       verificationToken = token;
-      const appUrl = process.env.FRONTEND_URL || process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`;
+      const appUrl = process.env.FRONTEND_URL || process.env.APP_URL || `https://oms-client-x2nv.vercel.app/${process.env.PORT || 3000}`;
       const verifyLink = `${appUrl.replace(/\/$/, '')}/verify-email?token=${encodeURIComponent(token)}`;
 
       const result = await db.query('SELECT email, first_name FROM users WHERE id = $1', [userId]);

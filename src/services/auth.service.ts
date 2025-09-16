@@ -41,7 +41,7 @@ export class AuthService {
 			throw new Error('Email not verified or missing');
 		}
 		// Restrict allowed domains (configurable)
-		const allowedDomains = (process.env.ALLOWED_DOMAINS || 'gmail.com')
+		const allowedDomains = (process.env.ALLOWED_DOMAINS || 'xnext.co.za,mooya.co.za')
 			.split(',')
 			.map(d => d.trim().toLowerCase())
 			.filter(Boolean);
