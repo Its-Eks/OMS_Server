@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import { AuditService } from '../services/audit.service.ts';
+import { CacheService, buildCacheKey } from '../services/cache.service.ts';
 import { Pool } from 'pg';
 
 // Assume db pool is available via req.app.get('pgPool')
@@ -50,10 +51,21 @@ export async function deactivateUser(req: Request, res: Response) {
 
 export async function getAuditLogs(req: Request, res: Response) {
   const db: Pool = req.app.get('pgPool');
+  const redis = req.app.get('redis');
   const auditService = new AuditService(db);
   try {
+    const cache = new CacheService(redis, 120); // 2 minute cache for audit logs
+    const cacheKey = buildCacheKey(['audit:logs', String(req.query.limit || 100)]);
+    
+    const cached = await cache.getJson<any>(cacheKey);
+    if (cached) {
+      return res.json(cached);
+    }
+
     const logs = await auditService.getAuditLogs(100);
-    res.json({ success: true, logs });
+    const payload = { success: true, logs };
+    await cache.setJson(cacheKey, payload, 120);
+    res.json(payload);
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

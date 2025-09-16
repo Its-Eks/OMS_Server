@@ -21,6 +21,7 @@ import { errorHandler, notFoundHandler } from './Middleware/error.middleware.ts'
 import { register } from 'prom-client';
 import { mongoClient, mongodb } from './Database/main.ts';
 import customerRouter from './Routes/customer-hybrid.routes.ts';
+import { CacheWarmingService } from './services/cache-warming.service.ts';
 
 dotenv.config();
 
@@ -170,6 +171,14 @@ class RobustServer {
     
     if (healthyServices === totalServices) {
       this.log('success', 'System', `All ${totalServices} services initialized successfully`);
+      
+      // Warm critical caches after services are ready
+      try {
+        const cacheWarming = new CacheWarmingService(pgPool, redis);
+        await cacheWarming.warmCriticalCaches();
+      } catch (error) {
+        this.log('warn', 'Cache', 'Cache warming failed, but continuing startup');
+      }
     } else {
       this.log('warn', 'System', `${healthyServices}/${totalServices} services healthy`);
     }

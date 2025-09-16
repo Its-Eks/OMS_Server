@@ -1,4 +1,6 @@
 import nodemailer from 'nodemailer';
+import dotenv from 'dotenv'
+dotenv.config();
 
 type BasicEmail = {
   to: string;
@@ -35,6 +37,9 @@ function buildTransport() {
       port,
       secure,
       auth: user && pass ? { user, pass } : undefined,
+      tls: {
+        rejectUnauthorized: false // Allow self-signed certificates
+      }
     })
   );
 }
