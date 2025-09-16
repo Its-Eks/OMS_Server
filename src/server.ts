@@ -187,10 +187,24 @@ class RobustServer {
   private setupMiddleware(): void {
     // Security and performance
     this.app.use(helmetConfig);
+    const allowedOrigins = (process.env.CORS_ORIGIN?.split(',').filter(Boolean) || []).concat([
+      'http://localhost:5173',
+      'http://127.0.0.1:5173'
+    ]);
     this.app.use(cors({
-      origin: process.env.CORS_ORIGIN?.split(',') || true,
-      credentials: true
+      origin: (origin, callback) => {
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.includes(origin)) return callback(null, true);
+        if (origin.endsWith('.onrender.com')) return callback(null, true);
+        return callback(null, false);
+      },
+      methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization'],
+      credentials: false,
+      maxAge: 86400,
+      optionsSuccessStatus: 204
     }));
+    this.app.options('*', cors());
     this.app.use(compression());
     this.app.use(express.json({ limit: '10mb' }));
     this.app.use(express.urlencoded({ extended: true }));
