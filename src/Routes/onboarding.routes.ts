@@ -51,4 +51,23 @@ router.post('/:id/notify', authorize(['onboarding:manage']), async (req, res) =>
   }
 });
 
+// Step/Progress management proxies
+router.put('/:id/step/:stepId', authorize(['onboarding:manage']), async (req, res) => {
+  try {
+    const resp = await axios.put(`${base}/api/onboarding/${req.params.id}/step/${req.params.stepId}`, req.body, { timeout: 10000 });
+    res.status(resp.status).json(resp.data);
+  } catch (e: any) {
+    res.status(e?.response?.status || 500).json(e?.response?.data || { success: false, error: { message: 'Failed to update onboarding step' } });
+  }
+});
+
+router.get('/:id/steps', authorize(['onboarding:manage']), async (req, res) => {
+  try {
+    const resp = await axios.get(`${base}/api/onboarding/${req.params.id}/steps`, { timeout: 10000 });
+    res.status(resp.status).json(resp.data);
+  } catch (e: any) {
+    res.status(e?.response?.status || 500).json(e?.response?.data || { success: false, error: { message: 'Failed to fetch onboarding steps' } });
+  }
+});
+
 export default router;
