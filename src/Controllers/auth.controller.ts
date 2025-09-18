@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { AuthService } from '../services/auth.service.ts';
+import { NotificationService } from '../services/notification.service.ts';
 
 // Unified login endpoint
 export async function loginUser(req: Request, res: Response) {
@@ -43,6 +44,25 @@ export async function loginUser(req: Request, res: Response) {
         sameSite: 'strict',
         maxAge: 7 * 24 * 60 * 60 * 1000
       });
+
+      // Emit first-login notification (once) using Redis guard
+      try {
+        const redisClient: any = redis as any;
+        const guardKey = `notif:first_login_emitted:${user.id}`;
+        const seen = await redisClient.get(guardKey);
+        if (!seen) {
+          const mongo = req.app.get('mongoClient');
+          if (mongo) {
+            const notif = new NotificationService(mongo);
+            await notif.emitEvent({
+              type: 'user_first_login',
+              userId: String(user.id),
+              metadata: { email: user.email }
+            });
+            await redisClient.setEx(guardKey, 60 * 60 * 24 * 30, '1'); // 30 days guard
+          }
+        }
+      } catch {}
 
       return res.json({ 
         success: true, 
@@ -188,6 +208,25 @@ export async function googleAuth(req: Request, res: Response) {
       ipAddress
     );
     
+    // Emit first-login notification (once) for Google as well
+    try {
+      const redisClient: any = redis as any;
+      const guardKey = `notif:first_login_emitted:${user.id}`;
+      const seen = await redisClient.get(guardKey);
+      if (!seen) {
+        const mongo = req.app.get('mongoClient');
+        if (mongo) {
+          const notif = new NotificationService(mongo);
+          await notif.emitEvent({
+            type: 'user_first_login',
+            userId: String(user.id),
+            metadata: { email: user.email }
+          });
+          await redisClient.setEx(guardKey, 60 * 60 * 24 * 30, '1');
+        }
+      }
+    } catch {}
+
     res.json({ 
       success: true, 
       data: { 
