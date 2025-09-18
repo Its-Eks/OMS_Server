@@ -15,6 +15,10 @@ import { httpRequestDurationMicroseconds } from './services/monitoring.service.t
 import onboardingRouter from './Routes/onboarding.routes.ts';
 import escalationRouter from './Routes/escalation.routes.ts';
 import emailRouter from './Routes/email.routes.ts';
+import fnoRouter from './Routes/fno.routes.ts';
+import workflowRouter from './Routes/workflow.routes.ts';
+import abTestingRouter from './Routes/ab-testing.routes.ts';
+import workflowTemplatesRouter from './Routes/workflow-templates.routes.ts';
 import { helmetConfig } from './Middleware/helmet.middleware.ts';
 import { generalRateLimit, authRateLimit } from './Middleware/rate-limit.middleware.ts';
 import { errorHandler, notFoundHandler } from './Middleware/error.middleware.ts';
@@ -258,6 +262,10 @@ class RobustServer {
       this.log('warn', 'Routes', 'FNO routes not available');
     }
     this.app.use('/email', emailRouter);
+    this.app.use('/fnos', fnoRouter);
+    this.app.use('/workflow', workflowRouter);
+    this.app.use('/ab-testing', abTestingRouter);
+    this.app.use('/workflow-templates', workflowTemplatesRouter);
     this.app.use('/customers', customerRouter);
 
     // Health endpoints

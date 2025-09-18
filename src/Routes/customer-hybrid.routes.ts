@@ -1,5 +1,5 @@
 import express from 'express';
-import { authenticate, authorize } from '../Middleware/authMiddleware.ts';
+import { authenticate, authorize } from '../middleware/authMiddleware.ts';
 import { pgPool } from '../Database/main.ts';
 import { CustomerHybridService } from '../services/customer-hybrid.service.ts';
 import { CustomerHybridController } from '../Controllers/customer-hybrid.controller.ts';

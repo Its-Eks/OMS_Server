@@ -39,5 +39,3 @@ router.get('/integrationLogs', authenticate as any, requireFNOPrivilegedRole, (r
 router.get('/monitoring', authenticate as any, requireFNOPrivilegedRole, (req, res) => controller.getMonitoring(req, res));
 
 export default router;
-
-

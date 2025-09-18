@@ -1,6 +1,31 @@
 import type { Request, Response } from 'express';
 import type { Pool } from 'pg';
+import type { MongoClient } from 'mongodb';
 import { CacheService, buildCacheKey } from '../services/cache.service.ts';
+import { OrdersService } from '../services/orders.service.ts';
+import { FNOCommunicationService } from '../services/fno-communication.service.ts';
+import { PolicyService } from '../services/policy.service.ts';
+
+function makeOrdersService(req: Request): OrdersService {
+  const db: Pool = req.app.get('pgPool');
+  let mongo: MongoClient | null = req.app.get('mongoClient');
+  if (!mongo) {
+    // Fallback no-op Mongo client to avoid crashes if Mongo isn’t connected yet
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const noop = {
+      db: () => ({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        collection: () => ({ insertOne: async () => ({}), find: () => ({ sort: () => ({ toArray: async () => [] }) }), updateOne: async () => ({}) })
+      })
+    } as any;
+    mongo = noop as unknown as MongoClient;
+    // eslint-disable-next-line no-console
+    console.warn('[orders] Mongo client not initialized; using no-op stub for FNO/Policy services');
+  }
+  const fnoComm = new FNOCommunicationService(mongo);
+  const policy = new PolicyService(mongo);
+  return new OrdersService(db, fnoComm, policy);
+}
 
 export async function getOrders(req: Request, res: Response) {
   const db: Pool = req.app.get('pgPool');
@@ -37,22 +62,77 @@ export async function getOrders(req: Request, res: Response) {
 }
 
 export async function createOrder(req: Request, res: Response) {
-  const db: Pool = req.app.get('pgPool');
   const redis = req.app.get('redis');
   try {
-    // TODO: Implement actual order creation logic
-    const result = await db.query(`
-      INSERT INTO orders (order_number, customer_id, status, created_at, updated_at)
-      VALUES ($1, $2, 'pending', NOW(), NOW())
-      RETURNING id
-    `, [req.body.orderNumber || `ORD-${Date.now()}`, req.body.customerId]);
+    const service = makeOrdersService(req);
+
+    const createdBy = (req as any).user?.userId || 'system';
+    const payload = req.body || {};
+
+    const normalizedServiceAddress = payload.serviceAddress || payload.service_address || payload.installation_address || {};
+    const normalizedServiceDetails = payload.serviceDetails || payload.service_details || {};
+
+    const order = await service.createOrder(
+      {
+        customerId: payload.customerId || payload.customer_id,
+        orderType: payload.orderType || payload.order_type || 'new_install',
+        priority: payload.priority || 'medium',
+        serviceAddress: normalizedServiceAddress,
+        serviceDetails: {
+          serviceType: normalizedServiceDetails.serviceType || normalizedServiceDetails.service_type || payload.service_type || 'internet',
+          bandwidth: normalizedServiceDetails.bandwidth || payload.bandwidth || normalizedServiceDetails.band_width || 'unknown',
+          installationType: normalizedServiceDetails.installationType || normalizedServiceDetails.installation_type || payload.installation_type || 'professional_install',
+          equipment: normalizedServiceDetails.equipment || payload.equipment
+        },
+      },
+      createdBy
+    );
 
     // Invalidate orders cache
     const cache = new CacheService(redis);
     await cache.delByPrefix(buildCacheKey(['orders:list']));
 
-    res.status(201).json({ success: true, orderId: result.rows[0].id });
+    res.status(201).json({ success: true, orderId: order.id, order });
   } catch (error: any) {
     res.status(500).json({ success: false, error: { message: error.message } });
+  }
+}
+
+export async function getOrderById(req: Request, res: Response) {
+  try {
+    const service = makeOrdersService(req);
+    const orderId = String(req.params.id || '');
+    if (!orderId) {
+      return res.status(400).json({ success: false, error: { message: 'Order ID is required' } });
+    }
+    const order = await service.getOrder(orderId);
+    if (!order) {
+      return res.status(404).json({ success: false, error: { message: 'Order not found' } });
+    }
+    res.json({ success: true, order });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: { message: error.message } });
+  }
+}
+
+export async function updateOrder(req: Request, res: Response) {
+  try {
+    const service = makeOrdersService(req);
+    const payload = req.body || {};
+    // Allow partial updates; map common snake_case to columns used by OrdersService.updateOrder
+    const updates: any = {};
+    if (payload.orderType || payload.order_type) updates.order_type = payload.orderType || payload.order_type;
+    if (payload.priority) updates.priority = payload.priority;
+    if (payload.serviceAddress || payload.service_address) updates.service_address = payload.serviceAddress || payload.service_address;
+    if (payload.serviceDetails || payload.service_details) updates.service_details = payload.serviceDetails || payload.service_details;
+    if (payload.fnoId || payload.fno_id) updates.fno_id = payload.fnoId || payload.fno_id;
+    if (payload.fnoReference || payload.fno_reference) updates.fno_reference = payload.fnoReference || payload.fno_reference;
+    if (payload.estimatedCompletionDate || payload.estimated_completion_date) updates.estimated_completion_date = payload.estimatedCompletionDate || payload.estimated_completion_date;
+    if (payload.actualCompletionDate || payload.actual_completion_date) updates.actual_completion_date = payload.actualCompletionDate || payload.actual_completion_date;
+
+    const updated = await service.updateOrder(String(req.params.id), updates);
+    res.json({ success: true, order: updated });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: { message: error.message } });
   }
 }
