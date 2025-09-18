@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { authenticate, authorize } from '../middleware/authMiddleware.ts';
+import { authenticate, authorize } from '../Middleware/authMiddleware.ts';
 import { getOrders, createOrder, getOrderById, updateOrder } from '../Controllers/orders.controller.ts';
 import { normalizeBodyToSnakeCase } from '../Middleware/case-transform.middleware.ts';
 import { OrdersService } from '../services/orders.service.ts';
