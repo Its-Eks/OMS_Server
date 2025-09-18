@@ -3,6 +3,7 @@ import { authenticate, authorize } from '../Middleware/authMiddleware.ts';
 import { registerUser } from '../Controllers/RegisterController.ts';
 import { generateEmailVerificationToken, verifyEmailToken } from '../Controllers/VerificationController.ts';
 import { generatePasswordResetToken, resetPassword } from '../Controllers/PasswordResetController.ts';
+import { NotificationService } from '../services/notification.service.ts';
 import { loginUser } from '../Controllers/auth.controller.ts';
 import { googleAuth } from '../Controllers/auth.controller.ts';
 import { refreshToken, logout, setPassword } from '../Controllers/auth.controller.ts';
@@ -77,95 +78,18 @@ router.get('/verify-email', async (req, res) => {
     const { token } = req.query;
     if (!token || typeof token !== 'string') throw new Error('Token required');
     await verifyEmailToken(db, token);
-    // Find user email from token
+    // Find user email and generate a one-time password setup token, then redirect to set-password page (no email sent)
     const userRes = await db.query(
-      `SELECT u.email, u.first_name
+      `SELECT u.email
        FROM email_verification_tokens evt
        JOIN users u ON u.id = evt.user_id
        WHERE evt.token = $1`,
       [token]
     );
     const userEmail = userRes.rows[0]?.email as string;
-    const firstName = (userRes.rows[0]?.first_name as string) || 'there';
-
-    // Generate a password setup token and email it
-    let resetTokenForLink: string | undefined;
-    if (userEmail) {
-      try {
+    if (!userEmail) throw new Error('User not found for token');
         const resetToken = await generatePasswordResetToken(db, userEmail);
-        resetTokenForLink = resetToken;
-        const appUrl = process.env.APP_URL || `https://oms-server-ntlv.onrender.com/${process.env.PORT || 3003}`;
-        const setPasswordLink = `${appUrl.replace(/\/$/, '')}/auth/set-password-page?token=${encodeURIComponent(resetToken)}`;
-        const passwordSetupHtml = [
-          `<p>Hi ${firstName},</p>`,
-          `<p>Your email has been verified successfully. Please set your password using the link below:</p>`,
-          `<p><a href="${setPasswordLink}">Set my password</a></p>`,
-          `<p>This link will expire in 1 hour.</p>`
-        ].join('\n');
-
-        await sendEmail({
-          to: userEmail,
-          subject: 'Set your OMS account password',
-          html: passwordSetupHtml
-        });
-      } catch (mailError) {
-        console.warn('Failed to send password setup email:', mailError);
-      }
-    }
-
-    // Render celebratory HTML with confetti and optional direct link
-    const directLink = resetTokenForLink ? `/auth/set-password-page?token=${encodeURIComponent(resetTokenForLink)}` : '';
-    res.setHeader('Content-Type', 'text/html');
-    res.end(`<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Email Verified</title>
-    <style>
-      body { margin:0; height:100vh; display:flex; align-items:center; justify-content:center; background:#0b1220; color:#fff; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
-      .card { text-align:center; padding:32px 28px; border-radius:14px; background: rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12); box-shadow: 0 10px 30px rgba(0,0,0,.3); backdrop-filter: blur(6px); }
-      h1 { margin:0 0 8px; font-size:24px; }
-      p { margin: 8px 0 16px; color:#cdd6f4; }
-      .btn { display:inline-block; margin-top:8px; padding:10px 14px; border-radius:8px; background:#22c55e; color:#0b1220; text-decoration:none; font-weight:600; }
-      .muted { font-size:12px; color:#9aa4bf; margin-top:10px; }
-      canvas { position:fixed; inset:0; pointer-events:none; }
-    </style>
-  </head>
-  <body>
-    <canvas id="confetti"></canvas>
-    <div class="card">
-      <h1>✅ Email Verified</h1>
-      <p>Thanks, ${firstName}. Your email is confirmed.</p>
-      ${directLink ? `<a class=\"btn\" href=\"${directLink}\">Set Password Now</a>` : ''}
-      <div class="muted">This window will close automatically in 5 seconds.</div>
-    </div>
-    <script>
-      const c = document.getElementById('confetti');
-      const ctx = c.getContext('2d');
-      function rs(){ c.width = innerWidth; c.height = innerHeight } rs(); addEventListener('resize', rs);
-      const N = 150; const parts = Array.from({length:N},()=>({
-        x: Math.random()*c.width,
-        y: Math.random()*-c.height,
-        r: 2+Math.random()*4,
-        s: 1+Math.random()*2,
-        a: Math.random()*Math.PI*2,
-        c: 'hsl(' + (Math.random()*360) + ',90%,60%)'
-      }));
-      function tick(){
-        ctx.clearRect(0,0,c.width,c.height);
-        for(const p of parts){
-          p.y += p.s; p.x += Math.sin(p.a+=0.03);
-          if(p.y > c.height+10){ p.y = -10; p.x = Math.random()*c.width }
-          ctx.fillStyle = p.c; ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,Math.PI*2); ctx.fill();
-        }
-        requestAnimationFrame(tick);
-      }
-      tick();
-      setTimeout(()=>{ try { window.close() } catch(e) {} }, 5000);
-    </script>
-  </body>
-</html>`);
+    return res.redirect(302, `/auth/set-password-page?token=${encodeURIComponent(resetToken)}`);
   } catch (error: any) {
     res.status(400).json({ success: false, error: { message: error.message } });
   }
@@ -239,8 +163,8 @@ router.post('/reset-password-form', async (req, res) => {
     if (String(newPassword) !== String(confirm)) throw new Error('Passwords do not match');
     if (String(newPassword).length < 8) throw new Error('Password must be at least 8 characters');
     await resetPassword(db, String(token), String(newPassword));
-    res.setHeader('Content-Type', 'text/html');
-    res.end(`<!doctype html><html><body><h1>Password set</h1><p>Your password was updated. You can now close this window and log in.</p></body></html>`);
+    // Redirect to client app after success
+    return res.redirect(302, 'https://oms-client-x2nv.vercel.app');
   } catch (error: any) {
     res.status(400).setHeader('Content-Type', 'text/html');
     res.end(`<!doctype html><html><body><h1>Could not set password</h1><p>${error.message}</p></body></html>`);
@@ -362,6 +286,21 @@ router.post('/reset-password', async (req, res) => {
     res.json({ success: true, message: 'Password reset successful' });
   } catch (error: any) {
     res.status(400).json({ success: false, error: { message: error.message } });
+  }
+});
+
+// Hook: notify password link expired (call this when frontend detects expiry on load)
+router.post('/password-link-expired', async (req, res) => {
+  try {
+    const { userId, email } = req.body || {};
+    const mongo = req.app.get('mongoClient');
+    if (mongo && userId) {
+      const notif = new NotificationService(mongo);
+      await notif.emitEvent({ type: 'password_link_expired', userId: String(userId), metadata: { email } });
+    }
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: { message: e.message } });
   }
 });
 

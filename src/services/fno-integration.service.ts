@@ -200,6 +200,13 @@ export class FNOService {
           success: true
         });
 
+        // Emit notification event for manual submission
+        try {
+          const { NotificationService } = await import('./notification.service.ts');
+          const notif = new NotificationService(this.mongo);
+          await notif.emitEvent({ type: 'fno_submit_manual', userId: String(order.created_by || 'system'), metadata: { orderId, fnoId } });
+        } catch {}
+
         await client.query('COMMIT');
         return { submissionId: inbox.rows[0].id, status: 'pending', message: 'Manual application created' };
       }
@@ -225,6 +232,13 @@ export class FNOService {
         processingTime,
         success: true
       });
+
+      // Emit notification event for API submission
+      try {
+        const { NotificationService } = await import('./notification.service.ts');
+        const notif = new NotificationService(this.mongo);
+        await notif.emitEvent({ type: 'fno_submit_api', userId: String(order.created_by || 'system'), metadata: { orderId, fnoId, reference: simulatedResponse.body.reference } });
+      } catch {}
 
       await client.query('COMMIT');
       return { submissionId: orderId, fnoReference: simulatedResponse.body.reference, status: 'submitted' };

@@ -11,7 +11,7 @@ import rolesRouter from './Routes/roles.routes.ts';
 import userManagementRouter from './Routes/user-management.routes.ts';
 import applicationAdminRouter from './Routes/application-admin.routes.ts';
 import { logger } from './services/logging.service.ts';
-import { httpRequestDurationMicroseconds } from './services/monitoring.service.ts';
+import { httpRequestDurationMicroseconds, startNotificationCron } from './services/monitoring.service.ts';
 import onboardingRouter from './Routes/onboarding.routes.ts';
 import escalationRouter from './Routes/escalation.routes.ts';
 import emailRouter from './Routes/email.routes.ts';
@@ -244,7 +244,7 @@ class RobustServer {
     this.app.set('mongoClient', mongoClient);
   }
 
-  private async setupRoutes(): void {
+  private async setupRoutes(): Promise<void> {
     // API Routes
     this.app.use('/auth', authRateLimit, authRoutes);
     this.app.use('/orders', ordersRoutes);
@@ -267,6 +267,11 @@ class RobustServer {
     this.app.use('/ab-testing', abTestingRouter);
     this.app.use('/workflow-templates', workflowTemplatesRouter);
     this.app.use('/customers', customerRouter);
+    // Notifications
+    try {
+      const notifRouter = (await import('./Routes/notifications.routes.ts')).default;
+      this.app.use('/notifications', notifRouter);
+    } catch {}
 
     // Health endpoints
     this.app.get('/health', async (req, res) => {
@@ -394,7 +399,7 @@ class RobustServer {
       
       await this.initializeServices();
       
-      this.server = this.app.listen(this.port, () => {
+      this.server = this.app.listen(this.port, async () => {
         clearTimeout(startupTimeout);
         this.state.isReady = true;
         
@@ -408,6 +413,15 @@ class RobustServer {
         this.log('success', 'System', `Ready in ${bootTime}ms`);
         
         this.startHealthMonitoring();
+
+        // Initialize WebSocket server
+        try {
+          const { SocketService } = await import('./services/socket.service.ts');
+          SocketService.init(this.server);
+        } catch {}
+
+        // Start background notification processor
+        try { startNotificationCron(this.app); } catch {}
       });
 
     } catch (error) {
