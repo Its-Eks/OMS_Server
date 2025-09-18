@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import axios from 'axios';
-import { authenticate, authorize } from '../middleware/authMiddleware.ts';
+import { authenticate, authorize } from '../Middleware/authMiddleware.ts';
 import { initiateOnboarding, getCustomerOnboarding, completeOnboardingStep, getTrialCustomers } from '../Controllers/onboarding.controller.ts';
 
 const router = Router();
