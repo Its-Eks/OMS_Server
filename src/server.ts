@@ -134,6 +134,11 @@ class RobustServer {
         await connectMongoDB();
       }).then(health => {
         this.state.services.mongodb = health;
+        // Refresh app references after a successful connect
+        try {
+          this.app.set('mongoClient', mongoClient);
+          this.app.set('mongodb', mongodb);
+        } catch {}
         this.log(health.status === 'healthy' ? 'success' : 'error', 'MongoDB', 
           health.status === 'healthy' ? 'Connected' : health.details || 'Failed', health.latency);
       })
@@ -239,7 +244,7 @@ class RobustServer {
     this.app.set('mongoClient', mongoClient);
   }
 
-  private setupRoutes(): void {
+  private async setupRoutes(): void {
     // API Routes
     this.app.use('/auth', authRateLimit, authRoutes);
     this.app.use('/orders', ordersRoutes);
@@ -249,6 +254,13 @@ class RobustServer {
     this.app.use('/application-admin', applicationAdminRouter);
     this.app.use('/onboarding', onboardingRouter);
     this.app.use('/escalation', escalationRouter);
+    // FNO routes
+    try {
+      const fnoRouter = (await import('./Routes/fno.routes.ts')).default;
+      this.app.use('/fno', fnoRouter);
+    } catch (e) {
+      this.log('warn', 'Routes', 'FNO routes not available');
+    }
     this.app.use('/email', emailRouter);
     this.app.use('/fnos', fnoRouter);
     this.app.use('/workflow', workflowRouter);
