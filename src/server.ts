@@ -410,7 +410,7 @@ class RobustServer {
       
       await this.initializeServices();
       
-      this.server = this.app.listen(this.port, () => {
+      this.server = this.app.listen(this.port, async () => {
         clearTimeout(startupTimeout);
         this.state.isReady = true;
         
@@ -438,6 +438,8 @@ class RobustServer {
         } catch (e: any) {
           this.log('warn', 'SLA Scheduler', e?.message || 'Failed to start');
         }
+
+        // Additional services can be initialized here if needed
       });
 
     } catch (error) {

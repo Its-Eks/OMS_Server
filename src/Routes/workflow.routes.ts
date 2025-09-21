@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import type { Pool } from 'pg';
-import { authenticate, authorize } from '../middleware/authMiddleware.ts';
+import { authenticate, authorize } from '../Middleware/authMiddleware.ts';
 import { ConfigurableWorkflowService } from '../services/configurable-workflow.service.ts';
 
 const router = Router();

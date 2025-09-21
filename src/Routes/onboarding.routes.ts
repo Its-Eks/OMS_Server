@@ -4,6 +4,7 @@ import { authenticate, authorize } from '../Middleware/authMiddleware.ts';
 import { initiateOnboarding, getCustomerOnboarding, completeOnboardingStep, getTrialCustomers, getOnboardingWorkflowState, getOnboardingWorkflowHistory, getOnboardingMetrics, getOnboardingWorkflowTransitions } from '../Controllers/onboarding.controller.ts';
 import { NotificationService } from '../services/notification.service.ts';
 
+
 const router = Router();
 
 router.use(authenticate);

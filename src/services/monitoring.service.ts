@@ -10,3 +10,20 @@ export const httpRequestDurationMicroseconds = new client.Histogram({
 export function observeRequest(method: string, route: string, code: string, duration: number) {
   httpRequestDurationMicroseconds.labels(method, route, code).observe(duration);
 }
+
+// Minimal cron-like processor for notifications (every 60s)
+let notifInterval: NodeJS.Timeout | null = null;
+export async function startNotificationCron(app: any) {
+  if (notifInterval) return;
+  notifInterval = setInterval(async () => {
+    try {
+      const mongoClient = app.get('mongoClient');
+      if (!mongoClient) return;
+      const { NotificationService } = await import('./notification.service.ts');
+      const svc = new NotificationService(mongoClient);
+      await svc.ensureIndexes();
+      await svc.ensureDefaultRules();
+      await svc.processEventsOnce();
+    } catch {}
+  }, 60000);
+}
