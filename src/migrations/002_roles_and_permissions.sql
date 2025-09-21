@@ -57,7 +57,8 @@ WITH base_roles(name, description, permissions) AS (
         'app_admin:view_inbox','app_admin:process_applications','app_admin:assign_applications',
         'escalations:view','escalations:resolve','escalations:escalate',
         'onboarding:initiate','onboarding:manage','onboarding:view_trials','onboarding:manage_campaigns',
-        'admin:manage_users','admin:manage_roles','admin:system_config','admin:view_audit_logs','admin:system_monitoring'
+        'admin:manage_users','admin:manage_roles','admin:system_config','admin:view_audit_logs','admin:system_monitoring',
+        'dashboard:read'
       ]::text[])::jsonb
     ),
     (
@@ -65,7 +66,7 @@ WITH base_roles(name, description, permissions) AS (
       'Manage users, roles and system configuration',
       to_json(ARRAY[
         'admin:manage_users','admin:manage_roles','admin:system_config','admin:view_audit_logs','admin:system_monitoring',
-        'orders:read','customers:read'
+        'orders:read','customers:read','dashboard:read'
       ]::text[])::jsonb
     ),
     (
@@ -73,7 +74,7 @@ WITH base_roles(name, description, permissions) AS (
       'Manage orders and escalations with FNO visibility',
       to_json(ARRAY[
         'orders:create','orders:read','orders:update','orders:delete','orders:assign','orders:escalate',
-        'escalations:view','escalations:resolve','customers:read','fno:view_logs'
+        'escalations:view','escalations:resolve','customers:read','fno:view_logs','dashboard:read'
       ]::text[])::jsonb
     ),
     (
@@ -81,7 +82,7 @@ WITH base_roles(name, description, permissions) AS (
       'Handle manual FNO applications',
       to_json(ARRAY[
         'app_admin:view_inbox','app_admin:process_applications','app_admin:assign_applications',
-        'orders:read','orders:update','fno:submit_manual'
+        'orders:read','orders:update','fno:submit_manual','dashboard:read'
       ]::text[])::jsonb
     ),
     (
@@ -89,7 +90,7 @@ WITH base_roles(name, description, permissions) AS (
       'Manage onboarding and trials',
       to_json(ARRAY[
         'onboarding:initiate','onboarding:manage','onboarding:view_trials','onboarding:manage_campaigns',
-        'customers:read','customers:update','orders:read'
+        'customers:read','customers:update','orders:read','dashboard:read'
       ]::text[])::jsonb
     ),
     (
@@ -97,7 +98,7 @@ WITH base_roles(name, description, permissions) AS (
       'Create and manage customer orders',
       to_json(ARRAY[
         'orders:create','orders:read','orders:update',
-        'customers:create','customers:read','customers:update'
+        'customers:create','customers:read','customers:update','dashboard:read'
       ]::text[])::jsonb
     )
 )

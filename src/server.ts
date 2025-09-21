@@ -25,6 +25,7 @@ import { errorHandler, notFoundHandler } from './Middleware/error.middleware.ts'
 import { register } from 'prom-client';
 import { mongoClient, mongodb } from './Database/main.ts';
 import customerRouter from './Routes/customer-hybrid.routes.ts';
+import dashboardRouter from './Routes/dashboard.routes.ts'; 
 
 dotenv.config();
 
@@ -254,6 +255,7 @@ class RobustServer {
     this.app.use('/application-admin', applicationAdminRouter);
     this.app.use('/onboarding', onboardingRouter);
     this.app.use('/escalation', escalationRouter);
+    this.app.use('/dashboard', dashboardRouter);
     // FNO routes
     try {
       const fnoRouter = (await import('./Routes/fno.routes.ts')).default;
@@ -272,6 +274,14 @@ class RobustServer {
       const notifRouter = (await import('./Routes/notifications.routes.ts')).default;
       this.app.use('/notifications', notifRouter);
     } catch {}
+
+    // Dashboard
+    try {
+      const dashboardRouter = (await import('./Routes/dashboard.routes.ts')).default;
+      this.app.use('/dashboard', dashboardRouter);
+    } catch (e) {
+      this.log('warn', 'Routes', 'Dashboard routes not available');
+    }
 
     // Health endpoints
     this.app.get('/health', async (req, res) => {
