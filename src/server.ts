@@ -20,6 +20,7 @@ import workflowRouter from './Routes/workflow.routes.ts';
 import emailTemplatesRouter from './Routes/email-templates.routes.ts';
 import abTestingRouter from './Routes/ab-testing.routes.ts';
 import workflowTemplatesRouter from './Routes/workflow-templates.routes.ts';
+import notificationsRouter from './Routes/notifications.routes.ts';
 import { helmetConfig } from './Middleware/helmet.middleware.ts';
 import { generalRateLimit, authRateLimit } from './Middleware/rate-limit.middleware.ts';
 import { errorHandler, notFoundHandler } from './Middleware/error.middleware.ts';
@@ -192,7 +193,8 @@ class RobustServer {
     this.app.use(helmetConfig);
     const allowedOrigins = (process.env.CORS_ORIGIN?.split(',').filter(Boolean) || []).concat([
       'http://localhost:5173',
-      'http://127.0.0.1:5173'
+      'http://127.0.0.1:5173',
+      'https://oms-client-x2nv.vercel.app'
     ]);
     this.app.use(cors({
       origin: (origin, callback) => {
@@ -204,6 +206,9 @@ class RobustServer {
         
         // Allow Render domains
         if (origin.endsWith('.onrender.com')) return callback(null, true);
+        
+        // Allow Vercel domains
+        if (origin.endsWith('.vercel.app')) return callback(null, true);
         
         // Allow localhost with any port for development
         if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
@@ -282,6 +287,7 @@ class RobustServer {
     this.app.use('/email-templates', emailTemplatesRouter);
     this.app.use('/ab-testing', abTestingRouter);
     this.app.use('/workflow-templates', workflowTemplatesRouter);
+    this.app.use('/notifications', notificationsRouter);
     this.app.use('/customers', customerRouter);
 
     // Health endpoints
