@@ -1,0 +1,162 @@
+{
+  "info": {
+    "name": "Onboarding Service Testing",
+    "description": "Test onboarding endpoints locally",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3003",
+      "type": "string"
+    },
+    {
+      "key": "onboardingServiceUrl",
+      "value": "http://localhost:3004",
+      "type": "string"
+    },
+    {
+      "key": "accessToken",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Authentication",
+      "item": [
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@example.com\",\n  \"password\": \"password123\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "login"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const response = pm.response.json();",
+                  "    if (response.success && response.data.accessToken) {",
+                  "        pm.collectionVariables.set('accessToken', response.data.accessToken);",
+                  "        console.log('Access token saved:', response.data.accessToken);",
+                  "    }",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Onboarding Service Direct",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{onboardingServiceUrl}}/health",
+              "host": ["{{onboardingServiceUrl}}"],
+              "path": ["health"]
+            }
+          }
+        },
+        {
+          "name": "Get Active Onboardings",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{onboardingServiceUrl}}/api/onboarding/active",
+              "host": ["{{onboardingServiceUrl}}"],
+              "path": ["api", "onboarding", "active"]
+            }
+          }
+        },
+        {
+          "name": "Get Analytics",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{onboardingServiceUrl}}/api/onboarding/analytics/overview",
+              "host": ["{{onboardingServiceUrl}}"],
+              "path": ["api", "onboarding", "analytics", "overview"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "OMS Server Proxy",
+      "item": [
+        {
+          "name": "Get Active Onboardings",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/onboarding/active",
+              "host": ["{{baseUrl}}"],
+              "path": ["onboarding", "active"]
+            }
+          }
+        },
+        {
+          "name": "Get Analytics",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/onboarding/analytics/overview",
+              "host": ["{{baseUrl}}"],
+              "path": ["onboarding", "analytics", "overview"]
+            }
+          }
+        },
+        {
+          "name": "Get Trial Customers",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/onboarding/trial-customers",
+              "host": ["{{baseUrl}}"],
+              "path": ["onboarding", "trial-customers"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -3,7 +3,7 @@ import type { Pool } from 'pg';
 import type { Redis } from 'ioredis';
 
 // Domain validation
-const ALLOWED_DOMAINS = (process.env.ALLOWED_DOMAINS || 'xnext.co.za,mooya.co.za')
+const ALLOWED_DOMAINS = (process.env.ALLOWED_DOMAINS || 'xnext.co.za,mooya.co.za,gmail.com')
   .split(',')
   .map(d => d.trim().toLowerCase())
   .filter(Boolean);
@@ -163,7 +163,7 @@ export async function registerUser(db: Pool, redis: Redis, userData: any): Promi
         role: resolvedRoleId,
         createdAt: new Date().toISOString()
       };
-      await redis.setex(`user:${userId}`, 3600, JSON.stringify(userCache)); // Cache for 1 hour
+      await redis.set(`user:${userId}`, JSON.stringify(userCache), 'EX', 3600); // Cache for 1 hour
       console.log('User cached in Redis');
     } catch (redisError) {
       console.warn('Redis caching failed:', redisError);

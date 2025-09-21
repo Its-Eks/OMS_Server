@@ -2,12 +2,12 @@ import { Pool } from 'pg';
 
 const useSSL = process.env.POSTGRES_SSL === 'true';
 
-console.log('[Postgres Config]');
-console.log('  HOST:', process.env.POSTGRES_HOST);
-console.log('  USER:', process.env.POSTGRES_USER);
-console.log('  DATABASE:', process.env.POSTGRES_DB);
-console.log('  PORT:', process.env.POSTGRES_PORT);
-console.log('  SSL:', useSSL);
+// console.log('[Postgres Config]');
+// console.log('  HOST:', process.env.POSTGRES_HOST);
+// console.log('  USER:', process.env.POSTGRES_USER);
+// console.log('  DATABASE:', process.env.POSTGRES_DB);
+// console.log('  PORT:', process.env.POSTGRES_PORT);
+// console.log('  SSL:', useSSL);
 
 export const pgPool = new Pool({
   host: process.env.POSTGRES_HOST,

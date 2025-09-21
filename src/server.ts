@@ -15,11 +15,18 @@ import { httpRequestDurationMicroseconds } from './services/monitoring.service.t
 import onboardingRouter from './Routes/onboarding.routes.ts';
 import escalationRouter from './Routes/escalation.routes.ts';
 import emailRouter from './Routes/email.routes.ts';
+import fnoRouter from './Routes/fno.routes.ts';
+import workflowRouter from './Routes/workflow.routes.ts';
+import emailTemplatesRouter from './Routes/email-templates.routes.ts';
+import abTestingRouter from './Routes/ab-testing.routes.ts';
+import workflowTemplatesRouter from './Routes/workflow-templates.routes.ts';
 import { helmetConfig } from './Middleware/helmet.middleware.ts';
 import { generalRateLimit, authRateLimit } from './Middleware/rate-limit.middleware.ts';
 import { errorHandler, notFoundHandler } from './Middleware/error.middleware.ts';
 import { register } from 'prom-client';
 import { mongoClient, mongodb } from './Database/main.ts';
+import customerRouter from './Routes/customer-hybrid.routes.ts';
+import { OnboardingSlaScheduler } from './services/onboarding-sla.scheduler.ts';
 
 dotenv.config();
 
@@ -48,6 +55,7 @@ class RobustServer {
   private state: ServerState;
   private healthCheckInterval: NodeJS.Timeout | null = null;
   private readonly maxStartupTime = 30000; // 30 seconds
+  private slaScheduler: OnboardingSlaScheduler | null = null;
 
   constructor() {
     this.app = express();
@@ -129,6 +137,11 @@ class RobustServer {
         await connectMongoDB();
       }).then(health => {
         this.state.services.mongodb = health;
+        // Refresh app references after a successful connect
+        try {
+          this.app.set('mongoClient', mongoClient);
+          this.app.set('mongodb', mongodb);
+        } catch {}
         this.log(health.status === 'healthy' ? 'success' : 'error', 'MongoDB', 
           health.status === 'healthy' ? 'Connected' : health.details || 'Failed', health.latency);
       })
@@ -177,10 +190,36 @@ class RobustServer {
   private setupMiddleware(): void {
     // Security and performance
     this.app.use(helmetConfig);
+    const allowedOrigins = (process.env.CORS_ORIGIN?.split(',').filter(Boolean) || []).concat([
+      'http://localhost:5173',
+      'http://127.0.0.1:5173'
+    ]);
     this.app.use(cors({
-      origin: process.env.CORS_ORIGIN?.split(',') || true,
-      credentials: true
+      origin: (origin, callback) => {
+        // Allow requests with no origin (like mobile apps or curl requests)
+        if (!origin) return callback(null, true);
+        
+        // Allow localhost development
+        if (allowedOrigins.includes(origin)) return callback(null, true);
+        
+        // Allow Render domains
+        if (origin.endsWith('.onrender.com')) return callback(null, true);
+        
+        // Allow localhost with any port for development
+        if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+          return callback(null, true);
+        }
+        
+        console.log(`CORS: Blocked origin: ${origin}`);
+        return callback(new Error('Not allowed by CORS'), false);
+      },
+      methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+      credentials: true,
+      maxAge: 86400,
+      optionsSuccessStatus: 204
     }));
+    this.app.options('*', cors());
     this.app.use(compression());
     this.app.use(express.json({ limit: '10mb' }));
     this.app.use(express.urlencoded({ extended: true }));
@@ -220,7 +259,7 @@ class RobustServer {
     this.app.set('mongoClient', mongoClient);
   }
 
-  private setupRoutes(): void {
+  private async setupRoutes(): Promise<void> {
     // API Routes
     this.app.use('/auth', authRateLimit, authRoutes);
     this.app.use('/orders', ordersRoutes);
@@ -230,7 +269,20 @@ class RobustServer {
     this.app.use('/application-admin', applicationAdminRouter);
     this.app.use('/onboarding', onboardingRouter);
     this.app.use('/escalation', escalationRouter);
+    // FNO routes
+    try {
+      const fnoRouter = (await import('./Routes/fno.routes.ts')).default;
+      this.app.use('/fno', fnoRouter);
+    } catch (e) {
+      this.log('warn', 'Routes', 'FNO routes not available');
+    }
     this.app.use('/email', emailRouter);
+    this.app.use('/fnos', fnoRouter);
+    this.app.use('/workflow', workflowRouter);
+    this.app.use('/email-templates', emailTemplatesRouter);
+    this.app.use('/ab-testing', abTestingRouter);
+    this.app.use('/workflow-templates', workflowTemplatesRouter);
+    this.app.use('/customers', customerRouter);
 
     // Health endpoints
     this.app.get('/health', async (req, res) => {
@@ -372,6 +424,20 @@ class RobustServer {
         this.log('success', 'System', `Ready in ${bootTime}ms`);
         
         this.startHealthMonitoring();
+
+        // Start SLA scheduler
+        try {
+          this.slaScheduler = new OnboardingSlaScheduler(pgPool, redis as any, {
+            intervalMs: Number(process.env.SLA_SCHEDULER_INTERVAL_MS || 300000),
+            warnThresholdPct: Number(process.env.SLA_WARN_THRESHOLD_PCT || 0.75),
+            reescalateThresholdPct: Number(process.env.SLA_REESCALATE_THRESHOLD_PCT || 1.5),
+            opsEmail: process.env.OPS_EMAIL || null,
+          });
+          this.slaScheduler.start();
+          this.log('success', 'SLA Scheduler', 'Started');
+        } catch (e: any) {
+          this.log('warn', 'SLA Scheduler', e?.message || 'Failed to start');
+        }
       });
 
     } catch (error) {

@@ -12,12 +12,12 @@ const { Pool } = pkg;
 
 const useSSL = process.env.POSTGRES_SSL === 'true';
 
-console.log('[Postgres Config]');
-console.log('  HOST:', process.env.POSTGRES_HOST);
-console.log('  USER:', process.env.POSTGRES_USER);
-console.log('  DATABASE:', process.env.POSTGRES_DB);
-console.log('  PORT:', process.env.POSTGRES_PORT);
-console.log('  SSL:', useSSL);
+// console.log('[Postgres Config]');
+// console.log('  HOST:', process.env.POSTGRES_HOST);
+// console.log('  USER:', process.env.POSTGRES_USER);
+// console.log('  DATABASE:', process.env.POSTGRES_DB);
+// console.log('  PORT:', process.env.POSTGRES_PORT);
+// console.log('  SSL:', useSSL);
 
 export const pgPool = new Pool({
   host: process.env.POSTGRES_HOST,
@@ -33,15 +33,15 @@ export const pgPool = new Pool({
 
 // ---------- Redis ----------
 const redisUrl = process.env.REDIS_URL;
-try {
-  const parsed = redisUrl ? new URL(redisUrl) : null;
-  const maskedAuth = parsed?.password ? parsed.password.slice(0, 4) + '...' : undefined;
-  console.log('[Redis Config]');
-  console.log('  URL:', redisUrl ? `${parsed?.protocol}//${parsed?.username ? parsed.username + ':' : ''}${maskedAuth ? '****@' : ''}${parsed?.host}` : undefined);
-  console.log('  HOST:', parsed?.hostname);
-  console.log('  PORT:', parsed?.port);
-  console.log('  TLS:', parsed?.protocol === 'rediss:');
-} catch {}
+// try {
+//   const parsed = redisUrl ? new URL(redisUrl) : null;
+//   const maskedAuth = parsed?.password ? parsed.password.slice(0, 4) + '...' : undefined;
+//   console.log('[Redis Config]');
+//   console.log('  URL:', redisUrl ? `${parsed?.protocol}//${parsed?.username ? parsed.username + ':' : ''}${maskedAuth ? '****@' : ''}${parsed?.host}` : undefined);
+//   console.log('  HOST:', parsed?.hostname);
+//   console.log('  PORT:', parsed?.port);
+//   console.log('  TLS:', parsed?.protocol === 'rediss:');
+// } catch {}
 
 export const redis = createClient({
   url: redisUrl ?? '',
