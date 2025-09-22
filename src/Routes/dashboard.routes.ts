@@ -77,6 +77,7 @@ router.get('/', authorize(['orders:read']), (req: Request, res: Response) => {
   if (!req.dashboardController) {
     return res.status(500).json({ success: false, error: { message: 'Dashboard controller not available' } });
   }
+  res.set('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
   req.dashboardController.getDashboard(req, res);
 });
 
@@ -102,6 +103,7 @@ router.get('/summary', authorize(['orders:read']), (req: Request, res: Response)
   if (!req.dashboardController) {
     return res.status(500).json({ success: false, error: { message: 'Dashboard controller not available' } });
   }
+  res.set('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
   req.dashboardController.getSummaryStats(req, res);
 });
 
@@ -131,6 +133,7 @@ router.get('/recent-orders', authorize(['orders:read']), (req: Request, res: Res
   if (!req.dashboardController) {
     return res.status(500).json({ success: false, error: { message: 'Dashboard controller not available' } });
   }
+  res.set('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
   req.dashboardController.getRecentOrders(req, res);
 });
 
@@ -161,6 +164,7 @@ router.get('/pending-escalations', authorize(['escalations:view']), (req: Reques
   if (!req.dashboardController) {
     return res.status(500).json({ success: false, error: { message: 'Dashboard controller not available' } });
   }
+  res.set('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
   req.dashboardController.getPendingEscalations(req, res);
 });
 

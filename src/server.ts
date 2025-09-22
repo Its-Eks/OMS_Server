@@ -255,6 +255,7 @@ class RobustServer {
     this.app.use('/application-admin', applicationAdminRouter);
     this.app.use('/onboarding', onboardingRouter);
     this.app.use('/escalation', escalationRouter);
+    // this.app.use('/dashboard', dashboardRouter);
     this.app.use('/dashboard', dashboardRouter);
     // FNO routes
     try {
