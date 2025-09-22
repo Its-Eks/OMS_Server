@@ -37,15 +37,15 @@ export interface ServiceDetails {
 }
 
 export type OrderStatus = 
-  | 'draft'
-  | 'pending_validation'
+  | 'created'
   | 'validated'
-  | 'submitted_to_fno'
+  | 'enriched'
+  | 'fno_submitted'
   | 'fno_accepted'
   | 'fno_rejected'
   | 'installation_scheduled'
-  | 'installation_in_progress'
-  | 'installation_completed'
-  | 'service_active'
-  | 'cancelled'
-  | 'completed';
+  | 'in_progress'
+  | 'installed'
+  | 'activated'
+  | 'completed'
+  | 'cancelled';

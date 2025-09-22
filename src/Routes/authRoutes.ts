@@ -3,20 +3,56 @@ import { authenticate, authorize } from '../Middleware/authMiddleware.ts';
 import { registerUser } from '../Controllers/RegisterController.ts';
 import { generateEmailVerificationToken, verifyEmailToken } from '../Controllers/VerificationController.ts';
 import { generatePasswordResetToken, resetPassword } from '../Controllers/PasswordResetController.ts';
+import { NotificationService } from '../services/notification.service.ts';
 import { loginUser } from '../Controllers/auth.controller.ts';
+import { googleAuth } from '../Controllers/auth.controller.ts';
+import { refreshToken, logout, setPassword } from '../Controllers/auth.controller.ts';
+import cookieParser from 'cookie-parser';
+import { sendEmail } from '../services/notification.service.ts';
 
 const router = Router();
+router.use(cookieParser());
 
-// Registration endpoint
-router.post('/register', async (req, res) => {
+// Admin-only registration endpoint
+router.post('/register', authenticate, authorize(['admin:manage_users']), async (req, res) => {
   const db = req.app.get('pgPool');
   const redis = req.app.get('redis');
   try {
     const userId = await registerUser(db, redis, req.body);
-    // Generate verification token
+    // Generate verification token and send email
     const token = await generateEmailVerificationToken(db, userId);
-    // TODO: Send email with token (implement email service)
-    res.status(201).json({ success: true, userId, verificationToken: token });
+    const appUrl =  process.env.APP_URL || `https://oms-server-ntlv.onrender.com/${process.env.PORT || 3000}`;
+    const verifyLink = `${appUrl.replace(/\/$/, '')}/auth/verify-email-page?token=${encodeURIComponent(token)}`;
+
+    let emailPreviewUrl: string | undefined;
+    try {
+      // Look up email to send to
+      const result = await db.query('SELECT email, first_name FROM users WHERE id = $1', [userId]);
+      const toEmail = result.rows[0]?.email as string;
+      const firstName = (result.rows[0]?.first_name as string) || 'there';
+      const emailHtml = [
+        `<p>Hi ${firstName},</p>`,
+        `<p>Welcome to OMS. Please verify your email address by clicking the link below:</p>`,
+        `<p><a href="${verifyLink}">Verify my email</a></p>`,
+        `<p>This link will expire in 24 hours. If you did not expect this email, you can ignore it.</p>`
+      ].join('\n');
+
+      const resultSend = await sendEmail({
+        to: toEmail,
+        subject: 'Verify your email to activate your OMS account',
+        html: emailHtml
+      });
+      emailPreviewUrl = (resultSend as any)?.previewUrl;
+    } catch (mailError) {
+      // Do not fail user creation if email sending fails
+      console.warn('Failed to send verification email:', mailError);
+    }
+
+    const responseBody: any = { success: true, userId, verificationToken: token };
+    if (emailPreviewUrl && process.env.NODE_ENV !== 'production') {
+      responseBody.emailPreviewUrl = emailPreviewUrl;
+    }
+    res.status(201).json(responseBody);
   } catch (error: any) {
     res.status(400).json({ success: false, error: { message: error.message } });
   }
@@ -25,6 +61,16 @@ router.post('/register', async (req, res) => {
 // Unified login endpoint
 router.post('/login', loginUser);
 
+//0auth route
+router.post('/google-login', googleAuth);
+
+// Token refresh + logout
+router.post('/refresh', refreshToken);
+router.post('/logout', logout);
+
+// Set password (for users without password)
+router.post('/set-password', authenticate, setPassword);
+
 // Email verification endpoint
 router.get('/verify-email', async (req, res) => {
   const db = req.app.get('pgPool');
@@ -32,10 +78,139 @@ router.get('/verify-email', async (req, res) => {
     const { token } = req.query;
     if (!token || typeof token !== 'string') throw new Error('Token required');
     await verifyEmailToken(db, token);
-    res.json({ success: true, message: 'Email verified' });
+    // Find user email and generate a one-time password setup token, then redirect to set-password page (no email sent)
+    const userRes = await db.query(
+      `SELECT u.email
+       FROM email_verification_tokens evt
+       JOIN users u ON u.id = evt.user_id
+       WHERE evt.token = $1`,
+      [token]
+    );
+    const userEmail = userRes.rows[0]?.email as string;
+    if (!userEmail) throw new Error('User not found for token');
+        const resetToken = await generatePasswordResetToken(db, userEmail);
+    return res.redirect(302, `/auth/set-password-page?token=${encodeURIComponent(resetToken)}`);
   } catch (error: any) {
     res.status(400).json({ success: false, error: { message: error.message } });
   }
+});
+
+// HTML flow: verify and render password setup form
+router.get('/verify-email-page', async (req, res) => {
+  const db = req.app.get('pgPool');
+  try {
+    const { token } = req.query;
+    if (!token || typeof token !== 'string') throw new Error('Token required');
+    await verifyEmailToken(db, token);
+
+    // Generate a one-time password setup token
+    const userRes = await db.query(
+      `SELECT u.email, u.first_name
+       FROM email_verification_tokens evt
+       JOIN users u ON u.id = evt.user_id
+       WHERE evt.token = $1`,
+      [token]
+    );
+    const userEmail = userRes.rows[0]?.email as string;
+    if (!userEmail) throw new Error('User not found for token');
+    const resetToken = await generatePasswordResetToken(db, userEmail);
+
+    // Render a simple HTML form that posts to /auth/reset-password-form
+    res.setHeader('Content-Type', 'text/html');
+    res.end(`<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Set Your Password</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; padding: 40px; }
+      .card { max-width: 420px; margin: 0 auto; border: 1px solid #ddd; border-radius: 8px; padding: 24px; }
+      h1 { font-size: 20px; margin: 0 0 12px; }
+      input { width: 100%; padding: 10px; margin: 8px 0; border: 1px solid #ccc; border-radius: 6px; }
+      button { width: 100%; padding: 10px; background: #0d6efd; color: #fff; border: 0; border-radius: 6px; cursor: pointer; }
+      button:disabled { opacity: .6; cursor: not-allowed; }
+      .muted { color: #666; font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Set Your Password</h1>
+      <form method="POST" action="/auth/reset-password-form">
+        <input type="hidden" name="token" value="${resetToken}" />
+        <label>New password</label>
+        <input type="password" name="newPassword" required minlength="8" />
+        <label>Confirm password</label>
+        <input type="password" name="confirm" required minlength="8" />
+        <button type="submit">Set Password</button>
+      </form>
+      <p class="muted">Password must be at least 8 characters.</p>
+    </div>
+  </body>
+ </html>`);
+  } catch (error: any) {
+    res.status(400).setHeader('Content-Type', 'text/html');
+    res.end(`<!doctype html><html><body><h1>Verification failed</h1><p>${error.message}</p></body></html>`);
+  }
+});
+
+
+// HTML form handler for password setup
+router.post('/reset-password-form', async (req, res) => {
+  const db = req.app.get('pgPool');
+  try {
+    const { token, newPassword, confirm } = req.body || {};
+    if (!token || !newPassword || !confirm) throw new Error('Missing fields');
+    if (String(newPassword) !== String(confirm)) throw new Error('Passwords do not match');
+    if (String(newPassword).length < 8) throw new Error('Password must be at least 8 characters');
+    await resetPassword(db, String(token), String(newPassword));
+    // Redirect to client app after success
+    return res.redirect(302, 'https://oms-client-x2nv.vercel.app');
+  } catch (error: any) {
+    res.status(400).setHeader('Content-Type', 'text/html');
+    res.end(`<!doctype html><html><body><h1>Could not set password</h1><p>${error.message}</p></body></html>`);
+  }
+});
+
+// HTML page that renders a password form from token in query (for direct email link)
+router.get('/set-password-page', async (req, res) => {
+  const { token } = req.query;
+  if (!token || typeof token !== 'string') {
+    res.status(400).setHeader('Content-Type', 'text/html');
+    return res.end(`<!doctype html><html><body><h1>Missing token</h1><p>Please use the link from your email.</p></body></html>`);
+  }
+  res.setHeader('Content-Type', 'text/html');
+  res.end(`<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Set Your Password</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; padding: 40px; }
+      .card { max-width: 420px; margin: 0 auto; border: 1px solid #ddd; border-radius: 8px; padding: 24px; }
+      h1 { font-size: 20px; margin: 0 0 12px; }
+      input { width: 100%; padding: 10px; margin: 8px 0; border: 1px solid #ccc; border-radius: 6px; }
+      button { width: 100%; padding: 10px; background: #0d6efd; color: #fff; border: 0; border-radius: 6px; cursor: pointer; }
+      button:disabled { opacity: .6; cursor: not-allowed; }
+      .muted { color: #666; font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Set Your Password</h1>
+      <form method="POST" action="/auth/reset-password-form">
+        <input type="hidden" name="token" value="${token}" />
+        <label>New password</label>
+        <input type="password" name="newPassword" required minlength="8" />
+        <label>Confirm password</label>
+        <input type="password" name="confirm" required minlength="8" />
+        <button type="submit">Set Password</button>
+      </form>
+      <p class="muted">Password must be at least 8 characters.</p>
+    </div>
+  </body>
+ </html>`);
 });
 
 // Resend verification endpoint
@@ -47,8 +222,26 @@ router.post('/resend-verification', async (req, res) => {
     if (result.rows.length === 0) throw new Error('User not found');
     const userId = result.rows[0].id;
     const token = await generateEmailVerificationToken(db, userId);
-    // TODO: Send email with token
-    res.json({ success: true, verificationToken: token });
+    const appUrl =  process.env.APP_URL || `https://oms-server-ntlv.onrender.com/${process.env.PORT || 3003}`;
+    const verifyLink = `${appUrl.replace(/\/$/, '')}/verify-email?token=${encodeURIComponent(token)}`;
+
+    try {
+      const resendHtml = [
+        `<p>Please verify your email address by clicking the link below:</p>`,
+        `<p><a href="${verifyLink}">Verify my email</a></p>`,
+        `<p>This link will expire in 24 hours.</p>`
+      ].join('\n');
+
+      await sendEmail({
+        to: email,
+        subject: 'Verify your email to activate your OMS account',
+        html: resendHtml
+      });
+    } catch (mailError) {
+      console.warn('Failed to send verification email:', mailError);
+    }
+
+    res.json({ success: true });
   } catch (error: any) {
     res.status(400).json({ success: false, error: { message: error.message } });
   }
@@ -60,8 +253,26 @@ router.post('/forgot-password', async (req, res) => {
   try {
     const { email } = req.body;
     const token = await generatePasswordResetToken(db, email);
-    // TODO: Send email with token
-    res.json({ success: true, resetToken: token });
+      const appUrl =  process.env.APP_URL || `https://oms-server-ntlv.onrender.com/${process.env.PORT || 3000}`;
+    const resetLink = `${appUrl.replace(/\/$/, '')}/reset-password?token=${encodeURIComponent(token)}`;
+
+    try {
+      const resetHtml = [
+        `<p>We received a request to reset your password.</p>`,
+        `<p><a href="${resetLink}">Reset my password</a></p>`,
+        `<p>If you did not request this, you can safely ignore this email.</p>`
+      ].join('\n');
+
+      await sendEmail({
+        to: email,
+        subject: 'Reset your OMS account password',
+        html: resetHtml
+      });
+    } catch (mailError) {
+      console.warn('Failed to send reset email:', mailError);
+    }
+
+    res.json({ success: true });
   } catch (error: any) {
     res.status(200).json({ success: true }); // Always return success for security
   }
@@ -76,6 +287,21 @@ router.post('/reset-password', async (req, res) => {
     res.json({ success: true, message: 'Password reset successful' });
   } catch (error: any) {
     res.status(400).json({ success: false, error: { message: error.message } });
+  }
+});
+
+// Hook: notify password link expired (call this when frontend detects expiry on load)
+router.post('/password-link-expired', async (req, res) => {
+  try {
+    const { userId, email } = req.body || {};
+    const mongo = req.app.get('mongoClient');
+    if (mongo && userId) {
+      const notif = new NotificationService(mongo);
+      await notif.emitEvent({ type: 'password_link_expired', userId: String(userId), metadata: { email } });
+    }
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: { message: e.message } });
   }
 });
 

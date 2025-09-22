@@ -1,4 +1,4 @@
-import type { Order, OrderStatus } from '../models/order.model';
+import type { Order, OrderStatus } from '../models/order.model.ts';
 
 export interface WorkflowTransition {
   from: OrderStatus;
@@ -9,23 +9,27 @@ export interface WorkflowTransition {
 
 export class WorkflowEngineService {
   private transitions: WorkflowTransition[] = [
-    { from: 'draft', to: 'pending_validation' },
-    { from: 'pending_validation', to: 'validated' },
-    { from: 'validated', to: 'submitted_to_fno' },
-    { from: 'submitted_to_fno', to: 'fno_accepted' },
-    { from: 'submitted_to_fno', to: 'fno_rejected' },
+    // PRD-aligned workflow: created → validated → enriched → fno_submitted → fno_accepted → installation_scheduled → in_progress → installed → activated → completed
+    { from: 'created', to: 'validated' },
+    { from: 'validated', to: 'enriched' },
+    { from: 'enriched', to: 'fno_submitted' },
+    { from: 'fno_submitted', to: 'fno_accepted' },
+    { from: 'fno_submitted', to: 'fno_rejected' },
     { from: 'fno_accepted', to: 'installation_scheduled' },
-    { from: 'installation_scheduled', to: 'installation_in_progress' },
-    { from: 'installation_in_progress', to: 'installation_completed' },
-    { from: 'installation_completed', to: 'service_active' },
-    { from: 'service_active', to: 'completed' },
-    // Cancellation can happen from most states
-    { from: 'pending_validation', to: 'cancelled' },
+    { from: 'installation_scheduled', to: 'in_progress' },
+    { from: 'in_progress', to: 'installed' },
+    { from: 'installed', to: 'activated' },
+    { from: 'activated', to: 'completed' },
+    // Cancellation can happen from most states (PRD requirement)
+    { from: 'created', to: 'cancelled' },
     { from: 'validated', to: 'cancelled' },
-    { from: 'submitted_to_fno', to: 'cancelled' },
+    { from: 'enriched', to: 'cancelled' },
+    { from: 'fno_submitted', to: 'cancelled' },
     { from: 'fno_accepted', to: 'cancelled' },
     { from: 'installation_scheduled', to: 'cancelled' },
-    { from: 'installation_in_progress', to: 'cancelled' },
+    { from: 'in_progress', to: 'cancelled' },
+    // PRD: Allow direct transitions for efficiency (e.g., skip enrichment if not needed)
+    { from: 'validated', to: 'fno_submitted' },
   ];
 
   getValidTransitions(currentStatus: OrderStatus): OrderStatus[] {
@@ -62,15 +66,15 @@ export class WorkflowEngineService {
 
   getOrderLifecycleStatuses(): OrderStatus[] {
     return [
-      'draft',
-      'pending_validation',
+      'created',
       'validated',
-      'submitted_to_fno',
+      'enriched',
+      'fno_submitted',
       'fno_accepted',
       'installation_scheduled',
-      'installation_in_progress',
-      'installation_completed',
-      'service_active',
+      'in_progress',
+      'installed',
+      'activated',
       'completed'
     ];
   }

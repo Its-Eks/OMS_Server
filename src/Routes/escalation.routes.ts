@@ -1,8 +1,13 @@
 import { Router } from 'express';
-// TODO: Import escalation controller functions
+import { authenticate, authorize } from '../Middleware/authMiddleware.ts';
+import { getMyEscalations, createEscalation, resolveEscalation } from '../Controllers/escalations.controller.ts';
+
 const router = Router();
 
-router.post('/escalate', (req, res) => res.json({ success: true, message: 'Order escalated (stub)' }));
-router.get('/sla', (req, res) => res.json({ success: true, message: 'SLA monitoring (stub)' }));
+router.use(authenticate);
+
+router.get('/my-escalations', authorize(['escalations:view']), getMyEscalations);
+router.post('/', authorize(['escalations:escalate']), createEscalation);
+router.put('/:id/resolve', authorize(['escalations:resolve']), resolveEscalation);
 
 export default router;
