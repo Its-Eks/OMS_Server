@@ -9,6 +9,11 @@ export const authRateLimit = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => {
+    const path = req.path || '';
+    // Allow password setup and verification HTML flows without rate limiting
+    return path === '/reset-password-form' || path === '/verify-email-page' || path === '/set-password-page';
+  }
 });
 
 export const generalRateLimit = rateLimit({

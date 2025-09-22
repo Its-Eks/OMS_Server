@@ -62,6 +62,16 @@ CREATE TABLE IF NOT EXISTS workflow_metrics (
 );
 
 -- Indexes for performance
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns 
+    WHERE table_name = 'workflow_metrics' AND column_name = 'workflow_id'
+  ) THEN
+    ALTER TABLE workflow_metrics ADD COLUMN workflow_id UUID REFERENCES workflow_definitions(id);
+  END IF;
+END$$;
+
 CREATE INDEX IF NOT EXISTS idx_workflow_templates_category ON workflow_templates(category);
 CREATE INDEX IF NOT EXISTS idx_workflow_templates_order_types ON workflow_templates USING GIN(order_types);
 CREATE INDEX IF NOT EXISTS idx_workflow_templates_complexity ON workflow_templates(complexity);

@@ -140,7 +140,7 @@ ON CONFLICT DO NOTHING;
 WITH 
   new_install_workflow AS (SELECT id FROM workflow_definitions WHERE order_type = 'new_install' LIMIT 1),
   states AS (
-    SELECT id, state_name FROM workflow_states ws 
+    SELECT ws.id, ws.state_name FROM workflow_states ws 
     JOIN new_install_workflow wf ON ws.workflow_id = wf.id
   )
 INSERT INTO workflow_transitions (workflow_id, from_state_id, to_state_id, transition_name, is_automatic, conditions) VALUES

@@ -21,8 +21,8 @@ router.post('/register', authenticate, authorize(['admin:manage_users']), async 
     const userId = await registerUser(db, redis, req.body);
     // Generate verification token and send email
     const token = await generateEmailVerificationToken(db, userId);
-    const appUrl =  process.env.APP_URL || `https://oms-server-ntlv.onrender.com/${process.env.PORT || 3000}`;
-    const verifyLink = `${appUrl.replace(/\/$/, '')}/auth/verify-email-page?token=${encodeURIComponent(token)}`;
+    const appUrl =  process.env.APP_URL || `https://oms-server-ntlv.onrender.com/`;
+    const verifyLink = `${appUrl}/auth/verify-email-page?token=${encodeURIComponent(token)}`;
 
     let emailPreviewUrl: string | undefined;
     try {
@@ -157,8 +157,8 @@ router.get('/verify-email-page', async (req, res) => {
 
 // HTML form handler for password setup
 router.post('/reset-password-form', async (req, res) => {
-  const db = req.app.get('pgPool');
   try {
+    const db = req.app.get('pgPool');
     const { token, newPassword, confirm } = req.body || {};
     if (!token || !newPassword || !confirm) throw new Error('Missing fields');
     if (String(newPassword) !== String(confirm)) throw new Error('Passwords do not match');
@@ -169,6 +169,19 @@ router.post('/reset-password-form', async (req, res) => {
   } catch (error: any) {
     res.status(400).setHeader('Content-Type', 'text/html');
     res.end(`<!doctype html><html><body><h1>Could not set password</h1><p>${error.message}</p></body></html>`);
+  }
+});
+
+// Ensure any errors on the HTML form path return HTML instead of JSON
+import type { Request, Response, NextFunction } from 'express';
+router.use('/reset-password-form', (err: any, req: Request, res: Response, _next: NextFunction) => {
+  try {
+    const message = (err && err.message) ? String(err.message) : 'Unable to set password';
+    res.status(400).setHeader('Content-Type', 'text/html');
+    res.end(`<!doctype html><html><body><h1>Could not set password</h1><p>${message}</p></body></html>`);
+  } catch {
+    res.status(400).setHeader('Content-Type', 'text/html');
+    res.end(`<!doctype html><html><body><h1>Could not set password</h1><p>Unexpected error</p></body></html>`);
   }
 });
 
@@ -222,8 +235,8 @@ router.post('/resend-verification', async (req, res) => {
     if (result.rows.length === 0) throw new Error('User not found');
     const userId = result.rows[0].id;
     const token = await generateEmailVerificationToken(db, userId);
-    const appUrl =  process.env.APP_URL || `https://oms-server-ntlv.onrender.com/${process.env.PORT || 3003}`;
-    const verifyLink = `${appUrl.replace(/\/$/, '')}/verify-email?token=${encodeURIComponent(token)}`;
+    const appUrl =  process.env.APP_URL || `https://oms-server-ntlv.onrender.com/`;
+    const verifyLink = `${appUrl}/verify-email?token=${encodeURIComponent(token)}`;
 
     try {
       const resendHtml = [
@@ -253,8 +266,8 @@ router.post('/forgot-password', async (req, res) => {
   try {
     const { email } = req.body;
     const token = await generatePasswordResetToken(db, email);
-      const appUrl =  process.env.APP_URL || `https://oms-server-ntlv.onrender.com/${process.env.PORT || 3000}`;
-    const resetLink = `${appUrl.replace(/\/$/, '')}/reset-password?token=${encodeURIComponent(token)}`;
+      const appUrl =  process.env.APP_URL || `https://oms-server-ntlv.onrender.com/`;
+    const resetLink = `${appUrl}/reset-password?token=${encodeURIComponent(token)}`;
 
     try {
       const resetHtml = [

@@ -167,7 +167,8 @@ ON CONFLICT (definition_id, from_state_id, to_state_id) DO NOTHING;
 
 -- Update the existing transition from rep_contact_scheduled to installation_scheduled
 -- to go through the proper flow: rep_contact_scheduled → service_setup
-UPDATE onboarding_workflow_transitions 
+-- Guard the update to avoid violating unique constraint if a row with the target to_state already exists
+UPDATE onboarding_workflow_transitions tgt
 SET to_state_id = (
     SELECT ts.id 
     FROM onboarding_workflow_states ts 
@@ -176,14 +177,26 @@ SET to_state_id = (
     AND def.is_active = true AND def.name = 'Standard Onboarding'
 ),
 transition_name = 'proceed_to_service_setup'
-WHERE from_state_id = (
+WHERE tgt.from_state_id = (
     SELECT fs.id 
     FROM onboarding_workflow_states fs 
     JOIN onboarding_workflow_definitions def ON fs.definition_id = def.id
     WHERE fs.state_name = 'rep_contact_scheduled' 
     AND def.is_active = true AND def.name = 'Standard Onboarding'
 )
-AND definition_id = (SELECT id FROM onboarding_workflow_definitions WHERE is_active = true AND name = 'Standard Onboarding');
+AND tgt.definition_id = (SELECT id FROM onboarding_workflow_definitions WHERE is_active = true AND name = 'Standard Onboarding')
+AND NOT EXISTS (
+  SELECT 1 FROM onboarding_workflow_transitions x
+  WHERE x.definition_id = tgt.definition_id
+    AND x.from_state_id = tgt.from_state_id
+    AND x.to_state_id = (
+      SELECT ts2.id
+      FROM onboarding_workflow_states ts2
+      JOIN onboarding_workflow_definitions def2 ON ts2.definition_id = def2.id
+      WHERE ts2.state_name = 'service_setup'
+      AND def2.is_active = true AND def2.name = 'Standard Onboarding'
+    )
+);
 
 -- Remove the old transition from installation_scheduled to activated since we now have the proper flow
 DELETE FROM onboarding_workflow_transitions 

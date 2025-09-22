@@ -201,6 +201,8 @@ class RobustServer {
       origin: (origin, callback) => {
         // Allow requests with no origin (like mobile apps or curl requests)
         if (!origin) return callback(null, true);
+        // Allow "null" origin (e.g., file://, some local form posts)
+        if (origin === 'null') return callback(null, true);
         
         // Allow localhost development
         if (allowedOrigins.includes(origin)) return callback(null, true);
