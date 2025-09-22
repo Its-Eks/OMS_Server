@@ -72,7 +72,13 @@ export class OnboardingSlaScheduler {
     );
 
     const now = Date.now();
-    const svc = new NotificationService();
+    let svc: NotificationService | null = null;
+    try {
+      svc = new NotificationService();
+    } catch {
+      // Notifications disabled when Mongo is not available
+      svc = null;
+    }
 
     for (const r of rows.rows) {
       const last = r.last_change ? new Date(r.last_change).getTime() : null;
@@ -90,7 +96,7 @@ export class OnboardingSlaScheduler {
       if (pct >= this.opts.warnThresholdPct && pct < 1) {
         if (await this.markNotified(warnKey)) {
           const to = r.assignee_email || r.manager_email;
-          if (to) {
+          if (svc && to) {
             const built = await svc.buildTemplateAsync('onboarding_sla_warning', {
               assigneeName: r.assignee_name || 'Team Member',
               onboardingId: r.onboarding_id,
@@ -116,7 +122,7 @@ export class OnboardingSlaScheduler {
           if (r.assignee_email) emails.push(r.assignee_email);
           if (r.manager_email) emails.push(r.manager_email);
           const to = emails.join(',');
-          if (to) {
+          if (svc && to) {
             const built = await svc.buildTemplateAsync('onboarding_sla_breach', {
               assigneeName: r.assignee_name || 'Team Member',
               managerName: r.manager_name || 'Manager',
@@ -139,7 +145,7 @@ export class OnboardingSlaScheduler {
       if (pct >= this.opts.reescalateThresholdPct) {
         if (await this.markNotified(reescKey)) {
           const to = this.opts.opsEmail || r.manager_email || r.assignee_email;
-          if (to) {
+          if (svc && to) {
             const built = await svc.buildTemplateAsync('onboarding_sla_reescalation', {
               onboardingId: r.onboarding_id,
               currentState: r.current_state,

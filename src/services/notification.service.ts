@@ -52,9 +52,14 @@ export class NotificationService {
 
   private transporter: any | null = null;
 
-  constructor(mongo: MongoClient) {
-    this.mongo = mongo;
-    this.db = mongo.db(process.env.MONGODB_DB || 'isp_oms_logs');
+  constructor(mongo?: MongoClient) {
+    // Allow optional injection; fallback to global app client
+    const fallback = (mongodb as unknown as MongoClient) || undefined;
+    this.mongo = (mongo || fallback)!;
+    if (!this.mongo) {
+      throw new Error('MongoDB client not available');
+    }
+    this.db = this.mongo.db(process.env.MONGODB_DB || 'isp_oms_logs');
     this.notifications = this.db.collection<NotificationDoc>('notifications');
     this.rules = this.db.collection<NotificationRuleDoc>('notification_rules');
     this.events = this.db.collection<UserEventDoc>('user_events');
@@ -73,6 +78,35 @@ export class NotificationService {
       });
     } else {
       console.warn('[notification] SMTP not fully configured; emails will be no-ops');
+    }
+  }
+
+  async buildTemplateAsync(type: EmailTemplateType, data: any): Promise<{ subject: string; html: string; text: string }> {
+    switch (type) {
+      case 'onboarding_sla_warning': {
+        const subject = `SLA warning: ${data.currentState} (due ${data.dueAt})`;
+        const text = `Approaching SLA for onboarding ${data.onboardingId} in state ${data.currentState}. Elapsed ${Math.round(data.elapsedHours)}h / SLA ${data.slaHours}h. Due at ${data.dueAt}.`;
+        const html = `<p><strong>Approaching SLA</strong> for onboarding <strong>${data.onboardingId}</strong> in state <strong>${data.currentState}</strong>.<br/>Elapsed ${Math.round(data.elapsedHours)}h / SLA ${data.slaHours}h.<br/>Due at ${data.dueAt}.</p>`;
+        return { subject, html, text };
+      }
+      case 'onboarding_sla_breach': {
+        const subject = `SLA breached: ${data.currentState}`;
+        const text = `SLA breached for onboarding ${data.onboardingId} in state ${data.currentState}. Elapsed ${Math.round(data.elapsedHours)}h.`;
+        const html = `<p><strong>SLA breached</strong> for onboarding <strong>${data.onboardingId}</strong> in state <strong>${data.currentState}</strong>.<br/>Elapsed ${Math.round(data.elapsedHours)}h.</p>`;
+        return { subject, html, text };
+      }
+      case 'onboarding_sla_reescalation': {
+        const subject = `SLA re-escalation: ${data.currentState}`;
+        const text = `Extended SLA breach for onboarding ${data.onboardingId} in state ${data.currentState}. Elapsed ${Math.round(data.elapsedHours)}h.`;
+        const html = `<p><strong>Extended SLA breach</strong> for onboarding <strong>${data.onboardingId}</strong> in state <strong>${data.currentState}</strong>.<br/>Elapsed ${Math.round(data.elapsedHours)}h.</p>`;
+        return { subject, html, text };
+      }
+      default: {
+        const subject = 'OMS Notification';
+        const text = 'This is a notification from OMS.';
+        const html = `<p>${text}</p>`;
+        return { subject, html, text };
+      }
     }
   }
 
