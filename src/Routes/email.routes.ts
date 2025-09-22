@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { sendEmail, sendTestEmail } from '../services/notification.service.ts';
+import { sendEmail, sendTestEmail, verifyEmailTransport } from '../services/notification.service.ts';
 
 const router = Router();
 
@@ -24,6 +24,11 @@ router.post('/send', async (req, res) => {
   } catch (err) {
     res.status(500).json({ success: false, error: String(err) });
   }
+});
+
+router.get('/health', async (_req, res) => {
+  const status = await verifyEmailTransport();
+  res.status(status.ok ? 200 : 500).json({ success: status.ok, ...status });
 });
 
 export default router;
