@@ -125,9 +125,10 @@ export async function createOrder(req: Request, res: Response) {
       createdBy
     );
 
-    // Invalidate orders cache
+    // Invalidate orders and dashboard cache
     const cache = new CacheService(redis);
     await cache.delByPrefix(buildCacheKey(['orders:list']));
+    await cache.delByPrefix(buildCacheKey(['dashboard:data']));
 
     res.status(201).json({ success: true, orderId: order.id, order });
   } catch (error: any) {

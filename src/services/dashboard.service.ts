@@ -57,23 +57,29 @@ export class DashboardService {
       return cached;
     }
 
-    const [summary, recentOrders, pendingEscalations] = await Promise.all([
-      this.getSummaryStats(),
-      this.getRecentOrders(),
-      this.getPendingEscalations()
-    ]);
+    // Use one Postgres client for this request to reduce pool contention
+    const client = await this.db.connect();
+    try {
+      const [summary, recentOrders, pendingEscalations] = await Promise.all([
+        this.getSummaryStats(client),
+        this.getRecentOrders(client),
+        this.getPendingEscalations(client)
+      ]);
 
-    const data: DashboardData = {
-      summary,
-      recentOrders,
-      pendingEscalations
-    };
+      const data: DashboardData = {
+        summary,
+        recentOrders,
+        pendingEscalations
+      };
 
-    await cache.setJson(cacheKey, data, 60);
-    return data;
+      await cache.setJson(cacheKey, data, 60);
+      return data;
+    } finally {
+      client.release();
+    }
   }
 
-  private async getSummaryStats(): Promise<DashboardSummary> {
+  private async getSummaryStats(client: Pool | any): Promise<DashboardSummary> {
     const today = new Date().toISOString().split('T')[0];
     
     const [
@@ -83,23 +89,23 @@ export class DashboardService {
       trialCustomersResult,
       ordersTodayResult
     ] = await Promise.all([
-      this.db.query('SELECT COUNT(*)::int AS count FROM orders'),
-      this.db.query(`
+      client.query('SELECT COUNT(*)::int AS count FROM orders'),
+      client.query(`
         SELECT COUNT(*)::int AS count 
         FROM orders 
         WHERE current_state IN ('created', 'validated', 'enriched', 'fno_submitted', 'fno_accepted', 'installation_scheduled', 'in_progress')
       `),
-      this.db.query(`
+      client.query(`
         SELECT COUNT(*)::int AS count 
         FROM escalations 
         WHERE status = 'open'
       `),
-      this.db.query(`
+      client.query(`
         SELECT COUNT(*)::int AS count 
         FROM customers 
         WHERE is_trial = true
       `),
-      this.db.query(`
+      client.query(`
         SELECT COUNT(*)::int AS count 
         FROM orders 
         WHERE DATE(created_at) = $1
@@ -115,8 +121,8 @@ export class DashboardService {
     };
   }
 
-  private async getRecentOrders(): Promise<RecentOrder[]> {
-    const result = await this.db.query(`
+  private async getRecentOrders(client: Pool | any): Promise<RecentOrder[]> {
+    const result = await client.query(`
       SELECT 
         o.id,
         o.order_number,
@@ -142,8 +148,8 @@ export class DashboardService {
     }));
   }
 
-  private async getPendingEscalations(): Promise<PendingEscalation[]> {
-    const result = await this.db.query(`
+  private async getPendingEscalations(client: Pool | any): Promise<PendingEscalation[]> {
+    const result = await client.query(`
       SELECT 
         e.id,
         e.order_id,

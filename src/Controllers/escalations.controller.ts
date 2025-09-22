@@ -39,9 +39,10 @@ export async function createEscalation(req: Request, res: Response) {
       [orderId || null, taskId || null, escalationLevel || 1, escalatedFrom, escalatedTo, escalationReason]
     );
 
-    // Invalidate escalations cache
+    // Invalidate escalations and dashboard caches
     const cache = new CacheService(redis);
     await cache.delByPrefix(buildCacheKey(['escalations:my']));
+    await cache.delByPrefix(buildCacheKey(['dashboard:data']));
 
     res.status(201).json({ success: true, id: result.rows[0].id });
   } catch (error: any) {
@@ -60,9 +61,10 @@ export async function resolveEscalation(req: Request, res: Response) {
       [resolutionNotes || null, id]
     );
 
-    // Invalidate escalations cache
+    // Invalidate escalations and dashboard caches
     const cache = new CacheService(redis);
     await cache.delByPrefix(buildCacheKey(['escalations:my']));
+    await cache.delByPrefix(buildCacheKey(['dashboard:data']));
 
     res.json({ success: true });
   } catch (error: any) {

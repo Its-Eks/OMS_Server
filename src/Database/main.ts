@@ -28,7 +28,8 @@ export const pgPool = new Pool({
   ssl: useSSL ? { rejectUnauthorized: false } : undefined,
   max: 20,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000,
+  // Increase connection acquisition timeout to avoid spurious timeouts under load
+  connectionTimeoutMillis: 10000,
 });
 
 // ---------- Redis ----------
