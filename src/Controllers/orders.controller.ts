@@ -43,17 +43,54 @@ export async function getOrders(req: Request, res: Response) {
       return res.json(cached);
     }
 
-    // TODO: Implement actual order retrieval logic with proper queries
+    // Get orders with all necessary fields for the frontend
     const result = await db.query(`
-      SELECT o.id, o.order_number, o.status, o.created_at, o.updated_at,
-             c.first_name, c.last_name, c.email as customer_email
+      SELECT o.id, o.order_number, o.customer_id, o.order_type, o.service_type, o.status as current_state, 
+             o.priority, o.installation_address as service_address, o.service_package, o.service_details,
+             o.fno_id, o.fno_reference, o.created_at, o.updated_at, o.estimated_completion,
+             c.first_name, c.last_name, c.email as customer_email,
+             f.name as fno_name, f.code as fno_code
       FROM orders o
       LEFT JOIN customers c ON c.id = o.customer_id
+      LEFT JOIN fnos f ON f.id = o.fno_id
       ORDER BY o.created_at DESC
       LIMIT 50
     `);
 
-    const payload = { success: true, orders: result.rows, total: result.rows.length };
+    // Transform the data to match frontend expectations
+    const transformedOrders = result.rows.map((row: any) => ({
+      id: row.id,
+      order_number: row.order_number,
+      customer_id: row.customer_id,
+      order_type: row.order_type || 'new_install',
+      current_state: row.current_state,
+      priority: row.priority,
+      service_address: row.service_address,
+      service_details: row.service_details || {
+        serviceType: row.service_type,
+        bandwidth: row.service_package,
+        installationType: 'professional_install'
+      },
+      fno_id: row.fno_id,
+      fno_reference: row.fno_reference,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      estimated_completion: row.estimated_completion,
+      customer: {
+        first_name: row.first_name,
+        last_name: row.last_name,
+        email: row.customer_email
+      },
+      fno: row.fno_name ? {
+        name: row.fno_name,
+        code: row.fno_code
+      } : null,
+      // Direct mapping for frontend compatibility
+      service_type: row.service_type,
+      service_package: row.service_package
+    }));
+
+    const payload = { success: true, data: transformedOrders, total: transformedOrders.length };
     await cache.setJson(cacheKey, payload, 30);
     res.json(payload);
   } catch (error: any) {
