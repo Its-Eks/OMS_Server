@@ -3,7 +3,7 @@ import type { Pool } from 'pg';
 import type { Redis } from 'ioredis';
 
 // Domain validation
-const ALLOWED_DOMAINS = (process.env.ALLOWED_DOMAINS || 'xnext.co.za,mooya.co.za,gmail.com')
+const ALLOWED_DOMAINS = (process.env.ALLOWED_DOMAINS || 'xnext.co.za,mooya.co.za')
   .split(',')
   .map(d => d.trim().toLowerCase())
   .filter(Boolean);
