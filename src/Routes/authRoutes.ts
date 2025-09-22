@@ -154,6 +154,7 @@ router.get('/verify-email-page', async (req, res) => {
   }
 });
 
+
 // HTML form handler for password setup
 router.post('/reset-password-form', async (req, res) => {
   const db = req.app.get('pgPool');
