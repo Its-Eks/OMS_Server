@@ -27,6 +27,18 @@ export class OrdersService {
     // Validate order data
     await this.validateOrderData(orderData);
 
+    // Enforce single active order per customer
+    const existing = await this.db.query(
+      `SELECT id FROM orders 
+         WHERE customer_id = $1 
+           AND status NOT IN ('completed','cancelled') 
+         ORDER BY created_at DESC LIMIT 1`,
+      [orderData.customerId]
+    );
+    if (existing.rows[0]) {
+      throw new Error('Customer already has an active order');
+    }
+
     // Generate order number
     const orderNumber = await this.generateOrderNumber();
 
@@ -73,8 +85,12 @@ export class OrdersService {
       console.warn('[orders] Failed to write initial order_state_history:', (e as any)?.message || e);
     }
 
-    // PRD: Execute initial workflow transitions automatically
-    await this.executeWorkflowTransitions(order.id, createdBy);
+    // Do NOT auto-validate on create; remain in 'created' until explicit validation
+
+    // Initiate onboarding immediately for this customer and order
+    try {
+      await this.ensureOnboardingForOrder(order.id, orderData.customerId, createdBy);
+    } catch {}
 
     return order;
   }
@@ -137,33 +153,66 @@ export class OrdersService {
       throw new Error('Order not found');
     }
 
+    // Business rule: 'enriched' transitions must be triggered by enrichment flow, not direct status update
+    if (newStatus === 'enriched') {
+      throw new Error('Order must be enriched via the Enrichment tab');
+    }
+
     // PRD: Use configurable workflow for transitions
     const workflowInstance = await this.configurableWorkflow.getWorkflowInstance(orderId);
     if (workflowInstance) {
-      // Get target state ID from workflow
-      const states = await this.configurableWorkflow.getWorkflowStates(workflowInstance.workflowId);
-      const targetState = states.find(s => s.stateName === newStatus);
-      
-      if (targetState) {
-        // Execute workflow transition
-        await this.configurableWorkflow.executeTransition(
-          workflowInstance.id,
-          targetState.id,
-          changedBy || 'system',
-          changeReason || `Transition to ${newStatus}`,
-          { fnoId: order.fnoId, validationPassed: true }
-        );
-        
-        // Update order status to match workflow
-        await this.db.query(
-          'UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2',
-          [newStatus, orderId]
-        );
-        
-        console.log(`[orders] Executed workflow transition for order ${orderId} to ${newStatus}`);
-      } else {
-        throw new Error(`State ${newStatus} not found in workflow`);
+      // Ensure PRD defaults present for this workflow (handles legacy instances with only 'created')
+      const orderType = order.orderType || (order as any).order_type || 'new_install';
+      await this.configurableWorkflow.ensurePrdDefaults(workflowInstance.workflowId, orderType);
+
+      // First, attempt to find a valid transition to the requested state from current state
+      let [states, validTransitions] = await Promise.all([
+        this.configurableWorkflow.getWorkflowStates(workflowInstance.workflowId),
+        this.configurableWorkflow.getValidTransitions(workflowInstance.id)
+      ]);
+
+      const stateIdToName = new Map(states.map(s => [s.id, s.stateName] as const));
+      const nameToState = new Map(states.map(s => [s.stateName, s] as const));
+
+      // Prefer a transition whose destination state's name matches the requested status
+      const transitionToRequested = validTransitions.find(t => (stateIdToName.get(t.toStateId) || '').toLowerCase() === newStatus.toLowerCase());
+      let targetStateId = transitionToRequested?.toStateId || nameToState.get(newStatus)?.id;
+
+      if (!targetStateId) {
+        const available = states.map(s => s.stateName).join(', ');
+        throw new Error(`State ${newStatus} not found in workflow. Available: ${available}`);
       }
+
+      // If no valid transition exists from current state to target, attempt to seed it on the fly
+      const hasDirect = validTransitions.some(t => t.toStateId === targetStateId);
+      if (!hasDirect) {
+        // Upsert transition from current state to requested target
+        try {
+          const currentStateId = workflowInstance.currentStateId;
+          await this.configurableWorkflow.upsertTransition(workflowInstance.workflowId, currentStateId, targetStateId, `Transition to ${newStatus}`, false, { requires_validation: true });
+          // refresh transitions
+          validTransitions = await this.configurableWorkflow.getValidTransitions(workflowInstance.id);
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.warn('[orders] failed to upsert missing transition:', (e as any)?.message || e);
+        }
+      }
+
+      await this.configurableWorkflow.executeTransition(
+        workflowInstance.id,
+        targetStateId,
+        changedBy || 'system',
+        changeReason || `Transition to ${newStatus}`,
+        { fnoId: order.fnoId, validationPassed: true }
+      );
+
+      // Update order status to match workflow
+      await this.db.query(
+        'UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2',
+        [newStatus, orderId]
+      );
+
+      console.log(`[orders] Executed workflow transition for order ${orderId} to ${newStatus}`);
     } else {
       // Fallback to legacy workflow engine
       const updatedOrder = await this.workflowEngine.transitionOrder(order, newStatus);
@@ -189,13 +238,81 @@ export class OrdersService {
       console.warn('[orders] Failed to write order_state_history:', (e as any)?.message || e);
     }
 
-    // Handle status-specific actions
-    await this.handleStatusTransition(order);
-
     const after = await this.getOrder(orderId);
     if (!after) {
       throw new Error('Order not found after transition');
     }
+
+    // Handle status-specific actions with updated order
+    await this.handleStatusTransition(after);
+    // If order reached validated, ensure onboarding exists (customer + order anchored)
+    if ((after as any).status === 'validated') {
+      await this.ensureOnboardingForOrder(after.id, (after as any).customerId, changedBy || 'system');
+    }
+    // Sync onboarding progression with order status per PRD mapping
+    await this.syncOnboardingForOrder(after);
+    return after;
+  }
+
+  // Internal-only transition used by enrichment flow to move validated -> enriched
+  async transitionToEnrichedInternal(orderId: string, changedBy?: string, changeReason?: string): Promise<Order> {
+    const order = await this.getOrder(orderId);
+    if (!order) {
+      throw new Error('Order not found');
+    }
+
+    const targetStatus: OrderStatus = 'enriched' as OrderStatus;
+
+    const workflowInstance = await this.configurableWorkflow.getWorkflowInstance(orderId);
+    if (workflowInstance) {
+      const orderType = order.orderType || (order as any).order_type || 'new_install';
+      await this.configurableWorkflow.ensurePrdDefaults(workflowInstance.workflowId, orderType);
+
+      const [states, validTransitions] = await Promise.all([
+        this.configurableWorkflow.getWorkflowStates(workflowInstance.workflowId),
+        this.configurableWorkflow.getValidTransitions(workflowInstance.id)
+      ]);
+
+      const stateIdToName = new Map(states.map(s => [s.id, s.stateName] as const));
+      const nameToState = new Map(states.map(s => [s.stateName, s] as const));
+
+      const transitionToRequested = validTransitions.find(t => (stateIdToName.get(t.toStateId) || '').toLowerCase() === targetStatus.toLowerCase());
+      const targetStateId = transitionToRequested?.toStateId || nameToState.get(targetStatus)?.id;
+
+      if (!targetStateId) {
+        const available = states.map(s => s.stateName).join(', ');
+        throw new Error(`State ${targetStatus} not found in workflow. Available: ${available}`);
+      }
+
+      await this.configurableWorkflow.executeTransition(
+        workflowInstance.id,
+        targetStateId,
+        changedBy || 'system',
+        changeReason || `Transition to ${targetStatus} (enrichment)`,
+        { enrichment: true }
+      );
+
+      await this.db.query(
+        'UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2',
+        [targetStatus, orderId]
+      );
+    } else {
+      // Legacy fallback
+      await this.db.query(
+        'UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2',
+        [targetStatus, orderId]
+      );
+    }
+
+    try {
+      await this.db.query(
+        'INSERT INTO order_state_history (order_id, from_state, to_state, changed_by, change_reason, created_at) VALUES ($1, $2, $3, $4, $5, NOW())',
+        [orderId, order.status, targetStatus, changedBy || null, changeReason || 'Order enriched']
+      );
+    } catch {}
+
+    const after = await this.getOrder(orderId);
+    if (!after) throw new Error('Order not found after enrichment transition');
     return after;
   }
 
@@ -241,6 +358,13 @@ export class OrdersService {
     const updated = await this.getOrder(orderId);
     if (!updated) {
       throw new Error('Order not found after cancellation');
+    }
+    // Also cancel related onboarding per PRD mapping
+    try {
+      await this.syncOnboardingForOrder({ ...(updated as any), status: 'cancelled' } as any);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('[orders] failed to sync onboarding on cancel:', (e as any)?.message || e);
     }
     return updated;
   }
@@ -353,6 +477,110 @@ export class OrdersService {
     }
   }
 
+  // Update related onboarding current_step based on order status, per PRD mapping
+  private async syncOnboardingForOrder(order: Order): Promise<void> {
+    const client = await this.db.connect();
+    try {
+      // Re-read authoritative order status from DB to avoid stale state
+      const ord = await client.query('SELECT status FROM orders WHERE id = $1', [order.id]);
+      const authoritativeStatus = (ord.rows[0]?.status || (order as any).status || (order as any).current_state || '').toString();
+
+      const res = await client.query('SELECT id, current_step FROM customer_onboarding WHERE order_id = $1 ORDER BY started_at DESC LIMIT 1', [order.id]);
+      if (res.rows.length === 0) return; // no onboarding tied to this order
+
+      const onboardingId = res.rows[0].id as string;
+      const status = authoritativeStatus;
+      let step: string | null = null;
+      switch (String(status)) {
+        case 'validated':
+          step = 'initiated';
+          break;
+        case 'enriched':
+          step = 'requirements_confirmed';
+          break;
+        case 'fno_submitted':
+          step = 'provisioning_requested';
+          break;
+        case 'fno_accepted':
+          step = 'provisioning_in_flight';
+          break;
+        case 'installation_scheduled':
+          step = 'installation_scheduled';
+          break;
+        case 'installed':
+          step = 'installation_complete';
+          break;
+        case 'activated':
+          step = 'service_activated';
+          break;
+        case 'completed':
+          step = 'completed';
+          break;
+        case 'cancelled':
+          step = 'cancelled';
+          break;
+        default:
+          step = null;
+      }
+      if (step === null) return;
+
+      // If already at the correct step, no-op
+      const currentStep = (res.rows[0].current_step || '').toString();
+      if (currentStep === step) return;
+
+      const setCompleted = step === 'completed' || step === 'cancelled';
+      await client.query(
+        `UPDATE customer_onboarding 
+           SET current_step = $1::text,
+               completion_percentage = CASE 
+                 WHEN $1::text = 'initiated' THEN 10
+                 WHEN $1::text = 'requirements_confirmed' THEN 20
+                 WHEN $1::text = 'provisioning_requested' THEN 30
+                 WHEN $1::text = 'provisioning_in_flight' THEN 50
+                 WHEN $1::text = 'installation_scheduled' THEN 60
+                 WHEN $1::text = 'installation_complete' THEN 80
+                 WHEN $1::text = 'service_activated' THEN 90
+                 WHEN $1::text IN ('completed','cancelled') THEN 100
+                 ELSE LEAST(100, COALESCE(completion_percentage, 0)) END,
+               updated_at = NOW(),
+               completed_at = CASE WHEN $2::boolean THEN NOW() ELSE completed_at END
+         WHERE id = $3::uuid`,
+        [step, setCompleted, onboardingId]
+      );
+
+      // Send welcome email when onboarding becomes 'initiated' (triggered by order validated)
+      if (step === 'initiated') {
+        try {
+          // Fetch customer email and order number
+          const info = await client.query(
+            `SELECT c.email, c.first_name, c.last_name, o.order_number
+               FROM customer_onboarding co
+               JOIN customers c ON c.id = co.customer_id
+               JOIN orders o ON o.id = co.order_id
+              WHERE co.id = $1`,
+            [onboardingId]
+          );
+          const row = info.rows[0];
+          if (row?.email) {
+            const { NotificationService } = await import('../services/notification.service.ts');
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const notif = new NotificationService((global as any).__mongoClient || null);
+            const name = [row.first_name, row.last_name].filter(Boolean).join(' ') || 'Customer';
+            const subject = 'Welcome to Onboarding';
+            const html = `<p>Hi ${name},</p><p>Your order ${row.order_number} has been validated. We have initiated your onboarding.</p>`;
+            const text = `Hi ${name},\nYour order ${row.order_number} has been validated. We have initiated your onboarding.`;
+            await notif.send({ to: row.email, subject, html, text });
+          }
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.warn('[onboarding] welcome email (on validated) failed:', (e as any)?.message || e);
+        }
+      }
+    } finally {
+      client.release();
+    }
+  }
+
   private async submitToFNO(order: Order): Promise<void> {
     if (!order.fnoId) {
       throw new Error('FNO not determined for order');
@@ -457,6 +685,50 @@ export class OrdersService {
           console.error(`[orders] Failed to execute automatic transition for order ${orderId}:`, error);
         }
       }
+    }
+  }
+
+  // Ensure there is exactly one active onboarding for the customer; create if missing and link to the order
+  private async ensureOnboardingForOrder(orderId: string, customerId: string, initiatedBy: string): Promise<void> {
+    const client = await this.db.connect();
+    try {
+      await client.query('BEGIN');
+      // Check existing active onboarding
+      const existing = await client.query(
+        `SELECT id FROM customer_onboarding 
+           WHERE customer_id = $1 
+             AND (completed_at IS NULL)
+             AND (current_step IS NULL OR current_step <> 'completed')
+         ORDER BY started_at DESC LIMIT 1`,
+        [customerId]
+      );
+      if (existing.rows.length > 0) {
+        // If exists but order_id is null, attach this order
+        const obId = existing.rows[0].id as string;
+        await client.query(`UPDATE customer_onboarding SET order_id = COALESCE(order_id, $1), updated_at = NOW() WHERE id = $2`, [orderId, obId]);
+        await client.query('COMMIT');
+        return;
+      }
+
+      // Snapshot minimal customer info
+      const customer = await client.query(`SELECT email, first_name, last_name FROM customers WHERE id = $1 LIMIT 1`, [customerId]);
+      const email = customer.rows[0]?.email || null;
+      const first = customer.rows[0]?.first_name || null;
+      const last = customer.rows[0]?.last_name || null;
+
+      // Create onboarding anchored to this order
+      await client.query(
+        `INSERT INTO customer_onboarding (customer_id, order_id, onboarding_type, current_step, completion_percentage, assigned_to, customer_email, customer_first_name, customer_last_name, started_at)
+         VALUES ($1, $2, $3, 'created', 5, NULL, $4, $5, $6, NOW())`,
+        [customerId, orderId, 'standard', email, first, last]
+      );
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      // eslint-disable-next-line no-console
+      console.warn('[orders] ensureOnboardingForOrder failed:', (e as any)?.message || e);
+    } finally {
+      client.release();
     }
   }
 

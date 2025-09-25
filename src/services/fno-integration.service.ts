@@ -175,6 +175,12 @@ export class FNOService {
       const order = orderRes.rows[0];
       const fno = fnoRes.rows[0];
 
+      // Enforce business rule: FNO submission only allowed when order is enriched
+      const currentState = (order.status || order.current_state || '').toString();
+      if (currentState !== 'enriched') {
+        throw new Error('Order must be in enriched state before FNO submission');
+      }
+
       // Update order with FNO and set status accordingly
       await client.query(
         'UPDATE orders SET fno_id = $1, updated_at = NOW(), status = $2 WHERE id = $3',

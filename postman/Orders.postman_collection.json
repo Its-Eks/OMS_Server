@@ -1,0 +1,129 @@
+{
+  "info": {
+    "name": "OMS - Orders",
+    "_postman_id": "c3b3b8e1-7a3b-4b5a-9f33-orders",
+    "description": "Orders API tests",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Auth - Login (optional)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": { "raw": "{{base_url}}/auth/login", "host": ["{{base_url}}"], "path": ["auth", "login"] },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"admin@example.com\",\n  \"password\": \"ChangeMe123!\"\n}"
+        }
+      }
+    },
+    {
+      "name": "Orders - Create",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "{{auth_token}}" }
+        ],
+        "url": { "raw": "{{base_url}}/orders", "host": ["{{base_url}}"], "path": ["orders"] },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"customerId\": \"REPLACE_WITH_CUSTOMER_ID\",\n  \"orderType\": \"new_install\",\n  \"priority\": \"normal\",\n  \"serviceAddress\": {\n    \"street\": \"123 Main Street\",\n    \"city\": \"Cape Town\",\n    \"province\": \"Western Cape\",\n    \"postalCode\": \"8000\",\n    \"country\": \"ZA\"\n  },\n  \"serviceDetails\": {\n    \"serviceType\": \"fibre\",\n    \"bandwidth\": \"100/100\",\n    \"installationType\": \"standard\"\n  },\n  \"notes\": \"Created via Postman\"\n}"
+        }
+      }
+    },
+    {
+      "name": "Orders - List",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "{{auth_token}}" }],
+        "url": { "raw": "{{base_url}}/orders?limit=20", "host": ["{{base_url}}"], "path": ["orders"], "query": [{ "key": "limit", "value": "20" }] }
+      }
+    },
+    {
+      "name": "Orders - Get by ID",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "{{auth_token}}" }],
+        "url": { "raw": "{{base_url}}/orders/{{order_id}}", "host": ["{{base_url}}"], "path": ["orders", "{{order_id}}"] }
+      }
+    },
+    {
+      "name": "Orders - Workflow State",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "{{auth_token}}" }],
+        "url": { "raw": "{{base_url}}/orders/{{order_id}}/workflow/state", "host": ["{{base_url}}"], "path": ["orders", "{{order_id}}", "workflow", "state"] }
+      }
+    },
+    {
+      "name": "Orders - Workflow History",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "{{auth_token}}" }],
+        "url": { "raw": "{{base_url}}/orders/{{order_id}}/history", "host": ["{{base_url}}"], "path": ["orders", "{{order_id}}", "history"] }
+      }
+    },
+    {
+      "name": "Orders - Transition Workflow",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "{{auth_token}}" }
+        ],
+        "url": { "raw": "{{base_url}}/orders/{{order_id}}/workflow/transition", "host": ["{{base_url}}"], "path": ["orders", "{{order_id}}", "workflow", "transition"] },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"action\": \"submit\", \n  \"reason\": \"Progress via Postman\"\n}"
+        }
+      }
+    },
+    {
+      "name": "Orders - Update (priority)",
+      "request": {
+        "method": "PATCH",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "{{auth_token}}" }
+        ],
+        "url": { "raw": "{{base_url}}/orders/{{order_id}}", "host": ["{{base_url}}"], "path": ["orders", "{{order_id}}"] },
+        "body": {
+          "mode": "raw",
+          "raw": "{ \"priority\": \"high\" }"
+        }
+      }
+    },
+    {
+      "name": "Orders - Assign",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "{{auth_token}}" }
+        ],
+        "url": { "raw": "{{base_url}}/orders/{{order_id}}/assign", "host": ["{{base_url}}"], "path": ["orders", "{{order_id}}", "assign"] },
+        "body": {
+          "mode": "raw",
+          "raw": "{ \"assigneeId\": \"REPLACE_WITH_USER_ID\" }"
+        }
+      }
+    },
+    {
+      "name": "Orders - Delete",
+      "request": {
+        "method": "DELETE",
+        "header": [{ "key": "Authorization", "value": "{{auth_token}}" }],
+        "url": { "raw": "{{base_url}}/orders/{{order_id}}", "host": ["{{base_url}}"], "path": ["orders", "{{order_id}}"] }
+      }
+    }
+  ],
+  "variable": [
+    { "key": "base_url", "value": "https://oms-server-ntlv.onrender.com" },
+    { "key": "auth_token", "value": "Bearer REPLACE_WITH_JWT" },
+    { "key": "order_id", "value": "REPLACE_WITH_ORDER_ID" }
+  ]
+}
+
+

@@ -129,11 +129,11 @@ export class NotificationService {
         // Generic SMTP configuration
         const secure = port === 465; // Implicit TLS on 465
         const transportOptions: any = {
-          host,
-          port,
-          secure,
+      host,
+      port,
+      secure,
           auth: { user, pass },
-          tls: {
+      tls: {
             minVersion: 'TLSv1.2',
             rejectUnauthorized: false,  // Fix for self-signed certificates
             secureProtocol: 'TLSv1_2_method'
