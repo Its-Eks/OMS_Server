@@ -32,6 +32,29 @@ export async function initiateOnboarding(req: Request, res: Response) {
   const redis = req.app.get('redis');
   const { customerId, orderId, onboardingType, assignedTo } = req.body;
   try {
+    // Enforce: only one active onboarding per customer
+    const active = await db.query(
+      `SELECT id FROM customer_onboarding 
+         WHERE customer_id = $1 
+           AND (completed_at IS NULL) 
+           AND (current_step IS NULL OR current_step <> 'completed')
+         ORDER BY started_at DESC LIMIT 1`,
+      [customerId]
+    );
+    if (active.rows[0]) {
+      return res.status(400).json({ success: false, error: { message: 'Customer already has an active onboarding' } });
+    }
+
+    // Require an associated order: ensure at least one order exists for this customer
+    const orderRow = await db.query(
+      `SELECT id FROM orders WHERE customer_id = $1 ORDER BY created_at DESC LIMIT 1`,
+      [customerId]
+    );
+    const effectiveOrderId = orderId || orderRow.rows[0]?.id || null;
+    if (!effectiveOrderId) {
+      return res.status(400).json({ success: false, error: { message: 'Onboarding requires an existing order for the customer' } });
+    }
+
     // Resolve customer snapshot info
     const cust = await db.query(
       `SELECT email, first_name, last_name FROM customers WHERE id = $1 LIMIT 1`,
@@ -45,7 +68,7 @@ export async function initiateOnboarding(req: Request, res: Response) {
       `INSERT INTO customer_onboarding (customer_id, order_id, onboarding_type, current_step, completion_percentage, assigned_to, customer_email, customer_first_name, customer_last_name)
        VALUES ($1, $2, $3, 'welcome_sent', 10, $4, $5, $6, $7)
        RETURNING id`,
-      [customerId, orderId || null, onboardingType, assignedTo || null, snapEmail, snapFirst, snapLast]
+      [customerId, effectiveOrderId, onboardingType, assignedTo || null, snapEmail, snapFirst, snapLast]
     );
 
     // Invalidate onboarding cache
@@ -133,6 +156,16 @@ export async function completeOnboardingStep(req: Request, res: Response) {
   const { onboardingId, stepId } = req.params as any;
   const { notes, reason, context } = req.body || {};
   try {
+    // Guard: disallow updates when onboarding is in a terminal state
+    const term = await db.query(
+      `SELECT current_step FROM customer_onboarding WHERE id = $1 LIMIT 1`,
+      [onboardingId]
+    );
+    const current = (term.rows[0]?.current_step || '').toString();
+    if (current === 'cancelled' || current === 'completed') {
+      return res.status(400).json({ success: false, error: { message: `Onboarding is ${current}; steps cannot be updated` } });
+    }
+
     // Enforce workflow
     const wf = new OnboardingWorkflowService(db);
     const actorId = (req as any).user?.userId as string | undefined;

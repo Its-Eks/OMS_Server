@@ -18,11 +18,17 @@ export const authRateLimit = rateLimit({
 
 export const generalRateLimit = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
+  max: process.env.RATE_LIMIT_MAX ? Number(process.env.RATE_LIMIT_MAX) : 1000, // dev-friendly default
   message: {
     success: false,
     error: { message: 'Too many requests, please try again later' }
   },
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => {
+    // Skip rate limiting for localhost development
+    const ip = req.ip || '';
+    const host = (req.hostname || '').toLowerCase();
+    return ip === '::1' || host === 'localhost' || host === '127.0.0.1';
+  }
 });

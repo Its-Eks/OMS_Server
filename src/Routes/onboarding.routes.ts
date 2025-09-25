@@ -104,6 +104,53 @@ router.put('/:id/step/:stepId', authorize(['onboarding:manage']), async (req, re
 router.get('/:id/steps', authorize(['onboarding:manage']), async (req, res) => {
   const db = req.app.get('pgPool');
   try {
+    // Reconcile onboarding.current_step with linked order status before returning steps
+    try {
+      const ob = await db.query(`SELECT id, current_step, order_id FROM customer_onboarding WHERE id = $1 LIMIT 1`, [req.params.id]);
+      const orderId = ob.rows[0]?.order_id as string | undefined;
+      const currentStep = (ob.rows[0]?.current_step || '') as string;
+      if (orderId) {
+        const ord = await db.query(`SELECT status FROM orders WHERE id = $1 LIMIT 1`, [orderId]);
+        const status = (ord.rows[0]?.status || '') as string;
+        const mapStatusToStep = (s: string): string | null => {
+          switch (s) {
+            case 'validated': return 'initiated';
+            case 'enriched': return 'requirements_confirmed';
+            case 'fno_submitted': return 'provisioning_requested';
+            case 'fno_accepted': return 'provisioning_in_flight';
+            case 'installation_scheduled': return 'installation_scheduled';
+            case 'installed': return 'installation_complete';
+            case 'activated': return 'service_activated';
+            case 'completed': return 'completed';
+            case 'cancelled': return 'cancelled';
+            default: return null;
+          }
+        };
+        const desired = mapStatusToStep(status);
+        if (desired && desired !== currentStep) {
+          const setCompleted = desired === 'completed' || desired === 'cancelled';
+          await db.query(
+            `UPDATE customer_onboarding 
+               SET current_step = $1::text,
+                   completion_percentage = CASE 
+                     WHEN $1::text = 'initiated' THEN 10
+                     WHEN $1::text = 'requirements_confirmed' THEN 20
+                     WHEN $1::text = 'provisioning_requested' THEN 30
+                     WHEN $1::text = 'provisioning_in_flight' THEN 50
+                     WHEN $1::text = 'installation_scheduled' THEN 60
+                     WHEN $1::text = 'installation_complete' THEN 80
+                     WHEN $1::text = 'service_activated' THEN 90
+                     WHEN $1::text IN ('completed','cancelled') THEN 100
+                     ELSE LEAST(100, COALESCE(completion_percentage, 0)) END,
+                   updated_at = NOW(),
+                   completed_at = CASE WHEN $2::boolean THEN NOW() ELSE completed_at END
+             WHERE id = $3::uuid`,
+            [desired, setCompleted, req.params.id]
+          );
+        }
+      }
+    } catch {}
+
     try {
       const resp = await axios.get(`${base}/api/onboarding/${req.params.id}/steps`, { timeout: 4000 });
       // Normalize with local current_step to ensure status accuracy
@@ -114,7 +161,13 @@ router.get('/:id/steps', authorize(['onboarding:manage']), async (req, res) => {
         activation: 'service_activated',
         install_scheduled: 'installation_scheduled',
         install_completed: 'installation_completed',
-        rep_contact_scheduled: 'service_setup' // Map old state to new flow
+        rep_contact_scheduled: 'service_setup', // Map old state to new flow
+        // PRD name → UI step aliases
+        initiated: 'welcome_sent',
+        requirements_confirmed: 'service_configuration',
+        provisioning_requested: 'equipment_ordered',
+        provisioning_in_flight: 'equipment_shipped',
+        installation_complete: 'installation_completed'
       };
       const current = alias[rawCurrent] || rawCurrent;
       const items: any[] = Array.isArray((resp.data as any)?.data) ? (resp.data as any).data : (Array.isArray(resp.data) ? resp.data : []);

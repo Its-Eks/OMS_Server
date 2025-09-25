@@ -71,6 +71,89 @@ export class ConfigurableWorkflowService {
     this.db = db;
   }
 
+  // Ensure PRD default states/transitions exist for known order types (e.g., new_install)
+  async ensurePrdDefaults(workflowId: string, orderType: string): Promise<void> {
+    // Check how many states exist
+    const statesResult = await this.db.query(
+      'SELECT id, state_name FROM workflow_states WHERE workflow_id = $1 ORDER BY order_index ASC',
+      [workflowId]
+    );
+    const existingNames = new Set<string>(statesResult.rows.map((r: any) => r.state_name));
+
+    if (orderType !== 'new_install') return; // only seed known PRD workflow
+
+    const desiredStates: Array<{ name: string; type: string; index: number; display: string; desc: string }> = [
+      { name: 'created', type: 'start', index: 1, display: 'Order Created', desc: 'Order has been created and is ready for processing' },
+      { name: 'validated', type: 'validation', index: 2, display: 'Order Validated', desc: 'Order data has been validated for completeness and accuracy' },
+      { name: 'enriched', type: 'enrichment', index: 3, display: 'Order Enriched', desc: 'Order has been enriched with network-specific parameters' },
+      { name: 'fno_submitted', type: 'task', index: 4, display: 'Submitted to FNO', desc: 'Order has been submitted to the appropriate FNO' },
+      { name: 'fno_accepted', type: 'gateway', index: 5, display: 'FNO Accepted', desc: 'FNO has accepted the order for processing' },
+      { name: 'installation_scheduled', type: 'task', index: 6, display: 'Installation Scheduled', desc: 'Installation has been scheduled with customer' },
+      { name: 'in_progress', type: 'task', index: 7, display: 'Installation In Progress', desc: 'Installation is currently in progress' },
+      { name: 'installed', type: 'task', index: 8, display: 'Installation Completed', desc: 'Installation has been completed successfully' },
+      { name: 'activated', type: 'task', index: 9, display: 'Service Activated', desc: 'Service has been activated for customer' },
+      { name: 'completed', type: 'end', index: 10, display: 'Order Completed', desc: 'Order has been completed successfully' },
+      { name: 'cancelled', type: 'end', index: 11, display: 'Order Cancelled', desc: 'Order has been cancelled' }
+    ];
+
+    // Insert missing states
+    for (const s of desiredStates) {
+      if (!existingNames.has(s.name)) {
+        await this.db.query(
+          `INSERT INTO workflow_states (workflow_id, state_name, state_type, order_index, display_name, description, config, is_required, estimated_duration_hours)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           ON CONFLICT DO NOTHING`,
+          [workflowId, s.name, s.type, s.index, s.display, s.desc, {}, s.name !== 'completed', 0]
+        );
+      }
+    }
+
+    // Map state names to ids
+    const refreshed = await this.db.query(
+      'SELECT id, state_name FROM workflow_states WHERE workflow_id = $1',
+      [workflowId]
+    );
+    const nameToId = new Map<string, string>(refreshed.rows.map((r: any) => [r.state_name, r.id] as const));
+
+    // Desired transitions for new_install
+    const transitions: Array<{ from: string; to: string; name: string; isAutomatic: boolean; conditions?: any }> = [
+      { from: 'created', to: 'validated', name: 'Validate Order', isAutomatic: true },
+      { from: 'validated', to: 'enriched', name: 'Enrich Order', isAutomatic: true },
+      { from: 'enriched', to: 'fno_submitted', name: 'Submit to FNO', isAutomatic: false, conditions: { requires_fno_id: true } },
+      { from: 'fno_submitted', to: 'fno_accepted', name: 'FNO Accepts', isAutomatic: false },
+      { from: 'fno_accepted', to: 'installation_scheduled', name: 'Schedule Installation', isAutomatic: false },
+      { from: 'installation_scheduled', to: 'in_progress', name: 'Start Installation', isAutomatic: false },
+      { from: 'in_progress', to: 'installed', name: 'Complete Installation', isAutomatic: false },
+      { from: 'installed', to: 'activated', name: 'Activate Service', isAutomatic: false },
+      { from: 'activated', to: 'completed', name: 'Complete Order', isAutomatic: false },
+      // Cancellations allowed from most active states
+      { from: 'created', to: 'cancelled', name: 'Cancel Order', isAutomatic: false },
+      { from: 'validated', to: 'cancelled', name: 'Cancel Order', isAutomatic: false },
+      { from: 'enriched', to: 'cancelled', name: 'Cancel Order', isAutomatic: false },
+      { from: 'fno_submitted', to: 'cancelled', name: 'Cancel Order', isAutomatic: false },
+      { from: 'fno_accepted', to: 'cancelled', name: 'Cancel Order', isAutomatic: false },
+      { from: 'installation_scheduled', to: 'cancelled', name: 'Cancel Order', isAutomatic: false },
+      { from: 'in_progress', to: 'cancelled', name: 'Cancel Order', isAutomatic: false },
+      { from: 'installed', to: 'cancelled', name: 'Cancel Order', isAutomatic: false },
+      { from: 'activated', to: 'cancelled', name: 'Cancel Order', isAutomatic: false }
+    ];
+
+    for (const t of transitions) {
+      const fromId = nameToId.get(t.from);
+      const toId = nameToId.get(t.to);
+      if (!fromId || !toId) continue;
+      await this.db.query(
+        `INSERT INTO workflow_transitions (workflow_id, from_state_id, to_state_id, transition_name, is_automatic, conditions)
+         SELECT $1, $2, $3, $4, $5, $6
+         WHERE NOT EXISTS (
+           SELECT 1 FROM workflow_transitions 
+           WHERE workflow_id = $1 AND from_state_id = $2 AND to_state_id = $3
+         )`,
+        [workflowId, fromId, toId, t.name, t.isAutomatic, t.conditions || {}]
+      );
+    }
+  }
+
   // Get workflow definition for order type
   async getWorkflowForOrderType(orderType: string): Promise<WorkflowDefinition | null> {
     const result = await this.db.query(
@@ -142,6 +225,8 @@ export class ConfigurableWorkflowService {
       throw new Error(`No active workflow found for order type: ${orderType}`);
     }
 
+    // Ensure PRD default states/transitions exist for this workflow if missing
+    await this.ensurePrdDefaults(workflow.id, orderType);
     const states = await this.getWorkflowStates(workflow.id);
     const startState = states.find(s => s.stateType === 'start');
     if (!startState) {
@@ -281,7 +366,38 @@ export class ConfigurableWorkflowService {
     // Check if workflow is completed
     await this.checkWorkflowCompletion(updatedInstance);
 
+    // Safety net: keep orders.status and onboarding step in sync with workflow state
+    try {
+      const stateNameRow = await this.db.query('SELECT state_name FROM workflow_states WHERE id = $1', [toStateId]);
+      const newStateName: string | undefined = stateNameRow.rows[0]?.state_name;
+      if (newStateName) {
+        await this.syncOrderAndOnboarding(updatedInstance.orderId, newStateName);
+      }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('[workflow] post-transition sync failed:', (e as any)?.message || e);
+    }
+
     return updatedInstance;
+  }
+
+  // Upsert a transition between two states for a workflow
+  async upsertTransition(
+    workflowId: string,
+    fromStateId: string,
+    toStateId: string,
+    transitionName: string,
+    isAutomatic: boolean,
+    conditions?: any
+  ): Promise<void> {
+    await this.db.query(
+      `INSERT INTO workflow_transitions (workflow_id, from_state_id, to_state_id, transition_name, is_automatic, conditions)
+       SELECT $1, $2, $3, $4, $5, $6
+       WHERE NOT EXISTS (
+         SELECT 1 FROM workflow_transitions WHERE workflow_id = $1 AND from_state_id = $2 AND to_state_id = $3
+       )`,
+      [workflowId, fromStateId, toStateId, transitionName, isAutomatic, conditions || {}]
+    );
   }
 
   // Get workflow execution history
@@ -386,6 +502,73 @@ export class ConfigurableWorkflowService {
         ['completed', instance.id]
       );
     }
+  }
+
+  // Update orders.status and the linked onboarding step to reflect the new workflow state
+  private async syncOrderAndOnboarding(orderId: string, stateName: string): Promise<void> {
+    // Update order row
+    await this.db.query('UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2', [stateName, orderId]);
+
+    // Map order status to onboarding step
+    let step: string | null = null;
+    switch (String(stateName)) {
+      case 'validated':
+        step = 'initiated';
+        break;
+      case 'enriched':
+        step = 'requirements_confirmed';
+        break;
+      case 'fno_submitted':
+        step = 'provisioning_requested';
+        break;
+      case 'fno_accepted':
+        step = 'provisioning_in_flight';
+        break;
+      case 'installation_scheduled':
+        step = 'installation_scheduled';
+        break;
+      case 'installed':
+        step = 'installation_complete';
+        break;
+      case 'activated':
+        step = 'service_activated';
+        break;
+      case 'completed':
+        step = 'completed';
+        break;
+      case 'cancelled':
+        step = 'cancelled';
+        break;
+      default:
+        step = null;
+    }
+    if (step === null) return;
+
+    const r = await this.db.query('SELECT id, current_step FROM customer_onboarding WHERE order_id = $1 ORDER BY started_at DESC LIMIT 1', [orderId]);
+    if (!r.rows[0]) return;
+    const onboardingId = r.rows[0].id as string;
+    const current = (r.rows[0].current_step || '').toString();
+    if (current === step) return;
+
+    const setCompleted = step === 'completed' || step === 'cancelled';
+    await this.db.query(
+      `UPDATE customer_onboarding 
+         SET current_step = $1::text,
+             completion_percentage = CASE 
+               WHEN $1::text = 'initiated' THEN 10
+               WHEN $1::text = 'requirements_confirmed' THEN 20
+               WHEN $1::text = 'provisioning_requested' THEN 30
+               WHEN $1::text = 'provisioning_in_flight' THEN 50
+               WHEN $1::text = 'installation_scheduled' THEN 60
+               WHEN $1::text = 'installation_complete' THEN 80
+               WHEN $1::text = 'service_activated' THEN 90
+               WHEN $1::text IN ('completed','cancelled') THEN 100
+               ELSE LEAST(100, COALESCE(completion_percentage, 0)) END,
+             updated_at = NOW(),
+             completed_at = CASE WHEN $2::boolean THEN NOW() ELSE completed_at END
+       WHERE id = $3::uuid`,
+      [step, setCompleted, onboardingId]
+    );
   }
 
   // Admin methods for workflow management

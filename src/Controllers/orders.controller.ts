@@ -168,7 +168,41 @@ export async function updateOrder(req: Request, res: Response) {
     if (payload.estimatedCompletionDate || payload.estimated_completion_date) updates.estimated_completion_date = payload.estimatedCompletionDate || payload.estimated_completion_date;
     if (payload.actualCompletionDate || payload.actual_completion_date) updates.actual_completion_date = payload.actualCompletionDate || payload.actual_completion_date;
 
-    const updated = await service.updateOrder(String(req.params.id), updates);
+    const orderId = String(req.params.id);
+    const before = await service.getOrder(orderId);
+    const updated = await service.updateOrder(orderId, updates);
+
+    // If enrichment-like fields were provided and the previous state was validated, auto-transition to enriched
+    const touchedEnrichment = Boolean(
+      payload.serviceDetails || payload.service_details ||
+      payload.technicalSpecs || payload.technical_specs ||
+      payload.installationDetails || payload.installation_details ||
+      payload.fnoId || payload.fno_id || payload.fnoReference || payload.fno_reference
+    );
+
+    if (before && before.status === 'validated' && touchedEnrichment) {
+      try {
+        await service.transitionToEnrichedInternal(orderId, (req as any).user?.userId || 'system', 'Order enriched via enrichment form');
+        const after = await service.getOrder(orderId);
+        return res.json({ success: true, order: after });
+      } catch (e: any) {
+        // If transition fails, still return the updated order, but include warning
+        return res.json({ success: true, order: updated, warning: e?.message || 'Failed to auto-transition to enriched' });
+      }
+    }
+
+    // If FNO information present and order already enriched, auto-transition to fno_submitted
+    const touchedFno = Boolean(payload.fnoId || payload.fno_id || payload.fnoReference || payload.fno_reference);
+    if (before && before.status === 'enriched' && touchedFno) {
+      try {
+        await service.transitionOrder(orderId, 'fno_submitted' as any, (req as any).user?.userId || 'system', 'Submitted to FNO via submission form');
+        const after = await service.getOrder(orderId);
+        return res.json({ success: true, order: after });
+      } catch (e: any) {
+        return res.json({ success: true, order: updated, warning: e?.message || 'Failed to auto-transition to fno_submitted' });
+      }
+    }
+
     res.json({ success: true, order: updated });
   } catch (error: any) {
     res.status(400).json({ success: false, error: { message: error.message } });
