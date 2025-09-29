@@ -71,7 +71,7 @@ export class ConfigurableWorkflowService {
     this.db = db;
   }
 
-  // Ensure PRD default states/transitions exist for known order types (e.g., new_install)
+  // Ensure PRD default states/transitions exist for known order types
   async ensurePrdDefaults(workflowId: string, orderType: string): Promise<void> {
     // Check how many states exist
     const statesResult = await this.db.query(
@@ -80,21 +80,87 @@ export class ConfigurableWorkflowService {
     );
     const existingNames = new Set<string>(statesResult.rows.map((r: any) => r.state_name));
 
-    if (orderType !== 'new_install') return; // only seed known PRD workflow
+    // Define PRD workflows per order type
+    let desiredStates: Array<{ name: string; type: string; index: number; display: string; desc: string }> = [];
+    let transitions: Array<{ from: string; to: string; name: string; isAutomatic: boolean; conditions?: any }> = [];
 
-    const desiredStates: Array<{ name: string; type: string; index: number; display: string; desc: string }> = [
-      { name: 'created', type: 'start', index: 1, display: 'Order Created', desc: 'Order has been created and is ready for processing' },
-      { name: 'validated', type: 'validation', index: 2, display: 'Order Validated', desc: 'Order data has been validated for completeness and accuracy' },
-      { name: 'enriched', type: 'enrichment', index: 3, display: 'Order Enriched', desc: 'Order has been enriched with network-specific parameters' },
-      { name: 'fno_submitted', type: 'task', index: 4, display: 'Submitted to FNO', desc: 'Order has been submitted to the appropriate FNO' },
-      { name: 'fno_accepted', type: 'gateway', index: 5, display: 'FNO Accepted', desc: 'FNO has accepted the order for processing' },
-      { name: 'installation_scheduled', type: 'task', index: 6, display: 'Installation Scheduled', desc: 'Installation has been scheduled with customer' },
-      { name: 'in_progress', type: 'task', index: 7, display: 'Installation In Progress', desc: 'Installation is currently in progress' },
-      { name: 'installed', type: 'task', index: 8, display: 'Installation Completed', desc: 'Installation has been completed successfully' },
-      { name: 'activated', type: 'task', index: 9, display: 'Service Activated', desc: 'Service has been activated for customer' },
-      { name: 'completed', type: 'end', index: 10, display: 'Order Completed', desc: 'Order has been completed successfully' },
-      { name: 'cancelled', type: 'end', index: 11, display: 'Order Cancelled', desc: 'Order has been cancelled' }
-    ];
+    if (orderType === 'new_install') {
+      desiredStates = [
+        { name: 'created', type: 'start', index: 1, display: 'Order Created', desc: 'Order has been created and is ready for processing' },
+        { name: 'validated', type: 'validation', index: 2, display: 'Order Validated', desc: 'Order data has been validated for completeness and accuracy' },
+        { name: 'enriched', type: 'enrichment', index: 3, display: 'Order Enriched', desc: 'Order has been enriched with network-specific parameters' },
+        { name: 'fno_submitted', type: 'task', index: 4, display: 'Submitted to FNO', desc: 'Order has been submitted to the appropriate FNO' },
+        { name: 'fno_accepted', type: 'gateway', index: 5, display: 'FNO Accepted', desc: 'FNO has accepted the order for processing' },
+        { name: 'installation_scheduled', type: 'task', index: 6, display: 'Installation Scheduled', desc: 'Installation has been scheduled with customer' },
+        { name: 'in_progress', type: 'task', index: 7, display: 'Installation In Progress', desc: 'Installation is currently in progress' },
+        { name: 'installed', type: 'task', index: 8, display: 'Installation Completed', desc: 'Installation has been completed successfully' },
+        { name: 'activated', type: 'task', index: 9, display: 'Service Activated', desc: 'Service has been activated for customer' },
+        { name: 'completed', type: 'end', index: 10, display: 'Order Completed', desc: 'Order has been completed successfully' },
+        { name: 'cancelled', type: 'end', index: 11, display: 'Order Cancelled', desc: 'Order has been cancelled' }
+      ];
+      transitions = [
+        { from: 'created', to: 'validated', name: 'Validate Order', isAutomatic: true },
+        { from: 'validated', to: 'enriched', name: 'Enrich Order', isAutomatic: true },
+        { from: 'enriched', to: 'fno_submitted', name: 'Submit to FNO', isAutomatic: false, conditions: { requires_fno_id: true } },
+        { from: 'fno_submitted', to: 'fno_accepted', name: 'FNO Accepts', isAutomatic: false },
+        { from: 'fno_accepted', to: 'installation_scheduled', name: 'Schedule Installation', isAutomatic: false },
+        { from: 'installation_scheduled', to: 'in_progress', name: 'Start Installation', isAutomatic: false },
+        { from: 'in_progress', to: 'installed', name: 'Complete Installation', isAutomatic: false },
+        { from: 'installed', to: 'activated', name: 'Activate Service', isAutomatic: false },
+        { from: 'activated', to: 'completed', name: 'Complete Order', isAutomatic: false },
+      ];
+    } else if (orderType === 'service_change') {
+      desiredStates = [
+        { name: 'created', type: 'start', index: 1, display: 'Order Created', desc: 'Service change order created' },
+        { name: 'validated', type: 'validation', index: 2, display: 'Order Validated', desc: 'Order validated for change' },
+        { name: 'change_scheduled', type: 'task', index: 3, display: 'Change Scheduled', desc: 'Change has been scheduled' },
+        { name: 'in_progress', type: 'task', index: 4, display: 'Change In Progress', desc: 'Service change is being applied' },
+        { name: 'changed', type: 'task', index: 5, display: 'Change Applied', desc: 'Service change applied successfully' },
+        { name: 'activated', type: 'task', index: 6, display: 'Service Re-Activated', desc: 'Service re-activated after change' },
+        { name: 'completed', type: 'end', index: 7, display: 'Order Completed', desc: 'Service change completed' },
+        { name: 'cancelled', type: 'end', index: 8, display: 'Order Cancelled', desc: 'Order has been cancelled' }
+      ];
+      transitions = [
+        { from: 'created', to: 'validated', name: 'Validate Order', isAutomatic: true },
+        { from: 'validated', to: 'change_scheduled', name: 'Schedule Change', isAutomatic: false },
+        { from: 'change_scheduled', to: 'in_progress', name: 'Start Change', isAutomatic: false },
+        { from: 'in_progress', to: 'changed', name: 'Apply Change', isAutomatic: false },
+        { from: 'changed', to: 'activated', name: 'Re-Activate Service', isAutomatic: false },
+        { from: 'activated', to: 'completed', name: 'Complete Order', isAutomatic: false },
+      ];
+    } else if (orderType === 'disconnect') {
+      desiredStates = [
+        { name: 'created', type: 'start', index: 1, display: 'Order Created', desc: 'Disconnect order created' },
+        { name: 'validated', type: 'validation', index: 2, display: 'Order Validated', desc: 'Order validated for disconnection' },
+        { name: 'disconnection_scheduled', type: 'task', index: 3, display: 'Disconnection Scheduled', desc: 'Disconnection scheduled with customer' },
+        { name: 'in_progress', type: 'task', index: 4, display: 'Disconnection In Progress', desc: 'Disconnection underway' },
+        { name: 'disconnected', type: 'task', index: 5, display: 'Disconnected', desc: 'Service disconnected' },
+        { name: 'completed', type: 'end', index: 6, display: 'Order Completed', desc: 'Disconnection completed' },
+        { name: 'cancelled', type: 'end', index: 7, display: 'Order Cancelled', desc: 'Order has been cancelled' }
+      ];
+      transitions = [
+        { from: 'created', to: 'validated', name: 'Validate Order', isAutomatic: true },
+        { from: 'validated', to: 'disconnection_scheduled', name: 'Schedule Disconnection', isAutomatic: false },
+        { from: 'disconnection_scheduled', to: 'in_progress', name: 'Start Disconnection', isAutomatic: false },
+        { from: 'in_progress', to: 'disconnected', name: 'Complete Disconnection', isAutomatic: false },
+        { from: 'disconnected', to: 'completed', name: 'Complete Order', isAutomatic: false },
+      ];
+    } else {
+      // Unknown order type: do nothing
+      return;
+    }
+
+    // Insert missing states
+    for (const s of desiredStates) {
+      if (!existingNames.has(s.name)) {
+        await this.db.query(
+          `INSERT INTO workflow_states (workflow_id, state_name, state_type, order_index, display_name, description, config, is_required, estimated_duration_hours)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           ON CONFLICT DO NOTHING`,
+          [workflowId, s.name, s.type, s.index, s.display, s.desc, {}, s.name !== 'completed', 0]
+        );
+      }
+    }
 
     // Insert missing states
     for (const s of desiredStates) {
@@ -115,29 +181,7 @@ export class ConfigurableWorkflowService {
     );
     const nameToId = new Map<string, string>(refreshed.rows.map((r: any) => [r.state_name, r.id] as const));
 
-    // Desired transitions for new_install
-    const transitions: Array<{ from: string; to: string; name: string; isAutomatic: boolean; conditions?: any }> = [
-      { from: 'created', to: 'validated', name: 'Validate Order', isAutomatic: true },
-      { from: 'validated', to: 'enriched', name: 'Enrich Order', isAutomatic: true },
-      { from: 'enriched', to: 'fno_submitted', name: 'Submit to FNO', isAutomatic: false, conditions: { requires_fno_id: true } },
-      { from: 'fno_submitted', to: 'fno_accepted', name: 'FNO Accepts', isAutomatic: false },
-      { from: 'fno_accepted', to: 'installation_scheduled', name: 'Schedule Installation', isAutomatic: false },
-      { from: 'installation_scheduled', to: 'in_progress', name: 'Start Installation', isAutomatic: false },
-      { from: 'in_progress', to: 'installed', name: 'Complete Installation', isAutomatic: false },
-      { from: 'installed', to: 'activated', name: 'Activate Service', isAutomatic: false },
-      { from: 'activated', to: 'completed', name: 'Complete Order', isAutomatic: false },
-      // Cancellations allowed from most active states
-      { from: 'created', to: 'cancelled', name: 'Cancel Order', isAutomatic: false },
-      { from: 'validated', to: 'cancelled', name: 'Cancel Order', isAutomatic: false },
-      { from: 'enriched', to: 'cancelled', name: 'Cancel Order', isAutomatic: false },
-      { from: 'fno_submitted', to: 'cancelled', name: 'Cancel Order', isAutomatic: false },
-      { from: 'fno_accepted', to: 'cancelled', name: 'Cancel Order', isAutomatic: false },
-      { from: 'installation_scheduled', to: 'cancelled', name: 'Cancel Order', isAutomatic: false },
-      { from: 'in_progress', to: 'cancelled', name: 'Cancel Order', isAutomatic: false },
-      { from: 'installed', to: 'cancelled', name: 'Cancel Order', isAutomatic: false },
-      { from: 'activated', to: 'cancelled', name: 'Cancel Order', isAutomatic: false }
-    ];
-
+    // Add base transitions per orderType
     for (const t of transitions) {
       const fromId = nameToId.get(t.from);
       const toId = nameToId.get(t.to);
@@ -151,6 +195,25 @@ export class ConfigurableWorkflowService {
          )`,
         [workflowId, fromId, toId, t.name, t.isAutomatic, t.conditions || {}]
       );
+    }
+
+    // Add cancellation transitions from most active states where applicable
+    const cancellableFrom = ['created','validated','enriched','fno_submitted','fno_accepted','installation_scheduled','in_progress','installed','activated','change_scheduled','changed','disconnection_scheduled','disconnected'];
+    if (nameToId.has('cancelled')) {
+      const toCancelled = nameToId.get('cancelled') as string;
+      for (const from of cancellableFrom) {
+        const fromId = nameToId.get(from);
+        if (!fromId) continue;
+        await this.db.query(
+          `INSERT INTO workflow_transitions (workflow_id, from_state_id, to_state_id, transition_name, is_automatic, conditions)
+           SELECT $1, $2, $3, $4, $5, $6
+           WHERE NOT EXISTS (
+             SELECT 1 FROM workflow_transitions 
+             WHERE workflow_id = $1 AND from_state_id = $2 AND to_state_id = $3
+           )`,
+          [workflowId, fromId, toCancelled, 'Cancel Order', false, {}]
+        );
+      }
     }
   }
 
@@ -228,9 +291,20 @@ export class ConfigurableWorkflowService {
     // Ensure PRD default states/transitions exist for this workflow if missing
     await this.ensurePrdDefaults(workflow.id, orderType);
     const states = await this.getWorkflowStates(workflow.id);
-    const startState = states.find(s => s.stateType === 'start');
+    let startState = states.find(s => s.stateType === 'start');
     if (!startState) {
-      throw new Error(`No start state found for workflow: ${workflow.name}`);
+      // Safety net: seed minimal 'created' start state and retry
+      await this.db.query(
+        `INSERT INTO workflow_states (workflow_id, state_name, state_type, order_index, display_name, description, config, is_required, estimated_duration_hours)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT DO NOTHING`,
+        [workflow.id, 'created', 'start', 1, 'Order Created', 'Auto-seeded start state', {}, true, 0]
+      );
+      const refetched = await this.getWorkflowStates(workflow.id);
+      startState = refetched.find(s => s.stateType === 'start') || null as any;
+      if (!startState) {
+        throw new Error(`No start state found for workflow: ${workflow.name}`);
+      }
     }
 
     const result = await this.db.query(
@@ -509,39 +583,51 @@ export class ConfigurableWorkflowService {
     // Update order row
     await this.db.query('UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2', [stateName, orderId]);
 
-    // Map order status to onboarding step
-    let step: string | null = null;
-    switch (String(stateName)) {
-      case 'validated':
-        step = 'initiated';
-        break;
-      case 'enriched':
-        step = 'requirements_confirmed';
-        break;
-      case 'fno_submitted':
-        step = 'provisioning_requested';
-        break;
-      case 'fno_accepted':
-        step = 'provisioning_in_flight';
-        break;
-      case 'installation_scheduled':
-        step = 'installation_scheduled';
-        break;
-      case 'installed':
-        step = 'installation_complete';
-        break;
-      case 'activated':
-        step = 'service_activated';
-        break;
-      case 'completed':
-        step = 'completed';
-        break;
-      case 'cancelled':
-        step = 'cancelled';
-        break;
-      default:
-        step = null;
-    }
+    // Fetch order_type for per-type onboarding mapping
+    const ord = await this.db.query('SELECT order_type FROM orders WHERE id = $1 LIMIT 1', [orderId]);
+    const orderType: string = (ord.rows[0]?.order_type || 'new_install') as string;
+
+    // Map order status to onboarding step per order type (PRD-aligned)
+    const mapNewInstall = (s: string): string | null => {
+      switch (s) {
+        case 'validated': return 'initiated';
+        case 'enriched': return 'requirements_confirmed';
+        case 'fno_submitted': return 'provisioning_requested';
+        case 'fno_accepted': return 'provisioning_in_flight';
+        case 'installation_scheduled': return 'installation_scheduled';
+        case 'installed': return 'installation_complete';
+        case 'activated': return 'service_activated';
+        case 'completed': return 'completed';
+        case 'cancelled': return 'cancelled';
+        default: return null;
+      }
+    };
+    const mapServiceChange = (s: string): string | null => {
+      switch (s) {
+        case 'validated': return 'initiated';
+        case 'change_scheduled': return 'service_configuration';
+        case 'in_progress': return 'provisioning_in_flight';
+        case 'changed': return 'service_activated';
+        case 'activated': return 'service_activated';
+        case 'completed': return 'completed';
+        case 'cancelled': return 'cancelled';
+        default: return null;
+      }
+    };
+    const mapDisconnect = (s: string): string | null => {
+      switch (s) {
+        case 'validated': return 'initiated';
+        case 'disconnection_scheduled': return 'service_configuration';
+        case 'in_progress': return 'provisioning_in_flight';
+        case 'disconnected': return 'installation_complete';
+        case 'completed': return 'completed';
+        case 'cancelled': return 'cancelled';
+        default: return null;
+      }
+    };
+
+    const mapper = orderType === 'service_change' ? mapServiceChange : orderType === 'disconnect' ? mapDisconnect : mapNewInstall;
+    const step = mapper(String(stateName));
     if (step === null) return;
 
     const r = await this.db.query('SELECT id, current_step FROM customer_onboarding WHERE order_id = $1 ORDER BY started_at DESC LIMIT 1', [orderId]);
