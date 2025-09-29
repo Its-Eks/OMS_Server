@@ -215,14 +215,14 @@ export class OrdersService {
       console.log(`[orders] Executed workflow transition for order ${orderId} to ${newStatus}`);
     } else {
       // Fallback to legacy workflow engine
-      const updatedOrder = await this.workflowEngine.transitionOrder(order, newStatus);
-      
-      // Update order in database
-      await this.db.query(
-        'UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2',
-        [newStatus, orderId]
-      );
-      
+    const updatedOrder = await this.workflowEngine.transitionOrder(order, newStatus);
+
+    // Update order in database
+    await this.db.query(
+      'UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2',
+      [newStatus, orderId]
+    );
+
       console.log(`[orders] Used legacy workflow for order ${orderId} to ${newStatus}`);
     }
 
@@ -249,7 +249,7 @@ export class OrdersService {
     if ((after as any).status === 'validated') {
       await this.ensureOnboardingForOrder(after.id, (after as any).customerId, changedBy || 'system');
     }
-    // Sync onboarding progression with order status per PRD mapping
+    // Sync onboarding progression with order status per PRD mapping and order type
     await this.syncOnboardingForOrder(after);
     return after;
   }
