@@ -167,6 +167,11 @@ export class FNOService {
       await client.query('BEGIN');
 
       // Fetch order and FNO
+      // Debug log incoming params
+      try {
+        // eslint-disable-next-line no-console
+        console.log('[FNO service] submitOrderToFNO params:', { orderId, fnoId, submissionType });
+      } catch {}
       const orderRes = await client.query('SELECT * FROM orders WHERE id = $1', [orderId]);
       if (orderRes.rows.length === 0) throw new Error('Order not found');
       const fnoRes = await client.query('SELECT * FROM fnos WHERE id = $1 AND is_active = true', [fnoId]);
@@ -175,25 +180,39 @@ export class FNOService {
       const order = orderRes.rows[0];
       const fno = fnoRes.rows[0];
 
-      // Enforce business rule: FNO submission only allowed when order is enriched
+      // Enforce business rule with flexibility for manual submissions
       const currentState = (order.status || order.current_state || '').toString();
-      if (currentState !== 'enriched') {
+      const normalizedType = (submissionType || 'manual').toString().toLowerCase() as 'api' | 'manual';
+      const isManual = normalizedType === 'manual';
+      const allowedForManual = currentState === 'enriched' || currentState === 'validated' || currentState === 'fno_submitted';
+      const alreadySubmitted = currentState === 'fno_submitted';
+      if (!isManual && currentState !== 'enriched') {
         throw new Error('Order must be in enriched state before FNO submission');
       }
+      if (isManual && !allowedForManual) {
+        throw new Error('Manual submission allowed only after validation or enrichment');
+      }
 
-      // Update order with FNO and set status accordingly
-      await client.query(
-        'UPDATE orders SET fno_id = $1, updated_at = NOW(), status = $2 WHERE id = $3',
-        [fnoId, submissionType === 'api' ? 'submitted_to_fno' : 'pending_validation', orderId]
-      );
-
-      if (submissionType === 'manual') {
-        // Create application inbox entry
+      if (normalizedType === 'manual') {
+        // 1) Create application inbox entry first
         const inbox = await client.query(
-          `INSERT INTO application_inbox (order_id, fno_id, priority, status, created_at)
-           VALUES ($1, $2, $3, $4, NOW()) RETURNING *`,
+          `INSERT INTO application_inbox (order_id, fno_id, priority, status, created_at, due_date, notes)
+           VALUES ($1, $2, $3, $4, NOW(), NOW() + INTERVAL '48 hours', NULL) RETURNING *`,
           [orderId, fnoId, order.priority || 'normal', 'pending']
         );
+
+        // 2) Link FNO to order; set status to fno_submitted only if not already
+        if (alreadySubmitted) {
+          await client.query(
+            'UPDATE orders SET fno_id = $1, updated_at = NOW() WHERE id = $2',
+            [fnoId, orderId]
+          );
+        } else {
+          await client.query(
+            'UPDATE orders SET fno_id = $1, status = $2, updated_at = NOW() WHERE id = $3',
+            [fnoId, 'fno_submitted', orderId]
+          );
+        }
 
         await this.logFNOIntegration({
           orderId,
@@ -245,6 +264,12 @@ export class FNOService {
         const notif = new NotificationService(this.mongo);
         await notif.emitEvent({ type: 'fno_submit_api', userId: String(order.created_by || 'system'), metadata: { orderId, fnoId, reference: simulatedResponse.body.reference } });
       } catch {}
+
+      // Advance order state for API submissions after reference is captured
+      await client.query(
+        'UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2',
+        ['fno_submitted', orderId]
+      );
 
       await client.query('COMMIT');
       return { submissionId: orderId, fnoReference: simulatedResponse.body.reference, status: 'submitted' };

@@ -16,7 +16,7 @@ export async function getInbox(req: Request, res: Response) {
     const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
 
     const listSql = `
-      SELECT ai.*, o.order_number, o.service_type, c.first_name || ' ' || c.last_name as customer_name, f.name as fno_name
+      SELECT ai.*, o.order_number, o.service_type, o.fno_reference as fno_reference, c.first_name || ' ' || c.last_name as customer_name, f.name as fno_name
       FROM application_inbox ai
       JOIN orders o ON o.id = ai.order_id
       JOIN customers c ON c.id = o.customer_id

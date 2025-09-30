@@ -26,12 +26,25 @@ export class FNOController {
         try { (await import('../Database/main.ts')).connectMongoDB?.(); } catch {}
       }
       const { fnoId } = req.params as { fnoId: string };
-      const { orderId, submissionType } = req.body as { orderId: string; submissionType: 'api' | 'manual' };
+      let { orderId, submissionType } = req.body as { orderId: string; submissionType?: 'api' | 'manual' | string };
+      // Debug log to trace incoming payloads
+      try {
+        // eslint-disable-next-line no-console
+        console.log('[FNO submit] params:', { fnoId }, 'body:', { orderId, submissionType }, 'user:', { id: (req as any)?.user?.userId, role: (req as any)?.user?.role });
+      } catch {}
+      if (!orderId) return res.status(400).json({ success: false, error: 'orderId is required' });
+      submissionType = (submissionType || 'manual').toString().toLowerCase() as any;
+      if (submissionType !== 'api' && submissionType !== 'manual') submissionType = 'manual' as any;
       const service = new FNOService(req.app.get('pgPool'), req.app.get('mongoClient'));
       const result = await service.submitOrderToFNO({ fnoId, orderId, submissionType });
-      const nextSteps = await service.getNextStepsForFNO(fnoId);
-      res.json({ success: true, data: result, guidance: { nextSteps } });
+      let nextSteps: any = null;
+      try { nextSteps = await service.getNextStepsForFNO(fnoId); } catch {}
+      res.json({ success: true, data: result, guidance: nextSteps ? { nextSteps } : undefined });
     } catch (error: any) {
+      try {
+        // eslint-disable-next-line no-console
+        console.error('[FNO submit] error:', { message: error?.message, stack: error?.stack });
+      } catch {}
       res.status(400).json({ success: false, error: error.message });
     }
   }
