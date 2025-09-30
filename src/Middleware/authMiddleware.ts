@@ -58,9 +58,16 @@ export function authorize(permissions: string[]) {
       return res.status(401).json({ success: false, error: { message: 'Not authenticated' } });
     }
 
-    const hasPermission = permissions.some(permission => 
-      req.user!.permissions.includes(permission)
-    );
+    const roleName = (req.user.role || '').toLowerCase();
+    const isSysAdmin = roleName.includes('system administrator') || roleName === 'admin' || roleName.includes('administrator');
+    const isOpsManager = roleName.includes('operations manager');
+
+    let hasPermission = isSysAdmin || permissions.some(permission => req.user!.permissions.includes(permission));
+
+    // Allow Operations Manager to assign escalations even if old JWT lacks refreshed permission
+    if (!hasPermission && isOpsManager && permissions.includes('escalations:assign')) {
+      hasPermission = true;
+    }
 
     if (!hasPermission) {
       return res.status(403).json({ success: false, error: { message: 'Insufficient permissions' } });
