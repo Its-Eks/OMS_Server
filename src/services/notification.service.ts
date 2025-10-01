@@ -43,6 +43,9 @@ export interface UserEventDoc {
 export type EmailTemplateType =
   | 'welcome_email'
   | 'generic_notification'
+  | 'escalation_assigned'
+  | 'escalation_created'
+  | 'escalation_resolved'
   | 'onboarding_rep_contact_scheduled'
   | 'onboarding_installation_scheduled'
   | 'onboarding_documents_received'
@@ -73,12 +76,36 @@ export class NotificationService {
   private transporter: any | null = null;
   private isTransporterReady: boolean = false;
 
+  // Singleton transport across instances to prevent repeated SMTP setup/verify
+  private static sharedTransporter: any | null = null;
+  private static sharedReady: boolean = false;
+  private static initialized: boolean = false;
+
+  // Dev memory fallback when NOTIFICATIONS_DEV_NO_MONGO=true
+  private readonly devNoMongo: boolean = false;
+  private static memoryStore: NotificationDoc[] = [];
+
   constructor(mongoOrDb?: MongoClient | Db) {
     // Accept either a MongoClient or a Db for flexibility
     const fallbackClient = mongoClient as unknown as MongoClient | undefined;
     const fallbackDb = mongodb as unknown as Db | undefined;
 
-    if (mongoOrDb && typeof (mongoOrDb as any).db === 'function') {
+    const devNoMongo = String(process.env.NOTIFICATIONS_DEV_NO_MONGO || '').toLowerCase() === 'true';
+    this.devNoMongo = devNoMongo;
+
+    if (devNoMongo) {
+      // Dev mode: skip Mongo entirely; email-only notifications
+      // Initialize a dummy in-memory DB substitute to satisfy types
+      // @ts-expect-error dev mode without Mongo
+      this.db = { collection: () => ({
+        createIndex: async () => {},
+        updateOne: async () => ({}),
+        find: () => ({ sort: () => ({ limit: () => ({ toArray: async () => [] }) }) }),
+        updateMany: async () => ({ modifiedCount: 0 }),
+        insertOne: async () => ({ insertedId: null }),
+        findOne: async () => null,
+      }) } as Db;
+    } else if (mongoOrDb && typeof (mongoOrDb as any).db === 'function') {
       // It's a MongoClient
       this.mongo = mongoOrDb as MongoClient;
       this.db = this.mongo.db(process.env.MONGODB_DB || 'isp_oms_logs');
@@ -91,15 +118,30 @@ export class NotificationService {
     } else if (fallbackDb) {
       this.db = fallbackDb;
     } else {
-      throw new Error('MongoDB client/db not available');
+      // If no Mongo available and not explicitly dev mode, degrade to dev mode
+      console.warn('[notification] MongoDB not available - falling back to dev no-mongo mode');
+      // @ts-expect-error dev mode without Mongo
+      this.db = { collection: () => ({
+        createIndex: async () => {},
+        updateOne: async () => ({}),
+        find: () => ({ sort: () => ({ limit: () => ({ toArray: async () => [] }) }) }),
+        updateMany: async () => ({ modifiedCount: 0 }),
+        insertOne: async () => ({ insertedId: null }),
+        findOne: async () => null,
+      }) } as Db;
     }
 
     this.notifications = this.db.collection<NotificationDoc>('notifications');
     this.rules = this.db.collection<NotificationRuleDoc>('notification_rules');
     this.events = this.db.collection<UserEventDoc>('user_events');
 
-    // Initialize SMTP transporter
-    this.initializeTransporter();
+    // Initialize or reuse a shared SMTP transporter
+    if (NotificationService.sharedTransporter) {
+      this.transporter = NotificationService.sharedTransporter;
+      this.isTransporterReady = NotificationService.sharedReady;
+    } else {
+      this.initializeTransporter();
+    }
   }
 
   private initializeTransporter(): void {
@@ -148,9 +190,12 @@ export class NotificationService {
         this.transporter = nodemailer.createTransport(transportOptions);
         console.log('[notification] ✅ Generic SMTP transporter configured');
       }
-      
+      // Share transporter across instances
+      NotificationService.sharedTransporter = this.transporter;
+
       // Mark not ready until verify completes
       this.isTransporterReady = false;
+      NotificationService.sharedReady = false;
       // Test the connection on startup (non-blocking)
       this.testConnectionAsync();
     } catch (error: any) {
@@ -164,9 +209,11 @@ export class NotificationService {
     try {
       await this.transporter.verify();
       this.isTransporterReady = true;
+      NotificationService.sharedReady = true;
       console.log('[notification] ✅ SMTP connection verified successfully');
     } catch (error: any) {
       this.isTransporterReady = false;
+      NotificationService.sharedReady = false;
       console.error('[notification] ❌ SMTP connection failed:', error.message);
       
       // Provide helpful error messages
@@ -182,6 +229,24 @@ export class NotificationService {
 
   async buildTemplateAsync(type: EmailTemplateType, data: any): Promise<{ subject: string; html: string; text: string }> {
     switch (type) {
+      case 'escalation_assigned': {
+        const subject = `Escalation assigned: ${data.orderNumber} (L${data.level})`;
+        const html = `<p><strong>Order:</strong> ${data.orderNumber}<br/><strong>Level:</strong> ${data.level}<br/><strong>Priority:</strong> ${data.priority || 'normal'}<br/><strong>Assigned to:</strong> ${data.assignedToName}${data.agingHours != null ? `<br/><strong>Aging:</strong> ${Math.round(data.agingHours)}h` : ''}${data.businessImpact ? `<br/><strong>Impact:</strong> ${data.businessImpact}` : ''}</p>`;
+        const text = `Escalation assigned for ${data.orderNumber} (L${data.level}) to ${data.assignedToName}${data.agingHours != null ? ` | Aging: ${Math.round(data.agingHours)}h` : ''}${data.businessImpact ? ` | Impact: ${data.businessImpact}` : ''}`;
+        return { subject, html, text };
+      }
+      case 'escalation_created': {
+        const subject = `Escalation created: ${data.orderNumber} (L${data.level})`;
+        const html = `<p><strong>Order:</strong> ${data.orderNumber}<br/><strong>Level:</strong> ${data.level}<br/><strong>Reason:</strong> ${data.reason}${data.agingHours != null ? `<br/><strong>Aging:</strong> ${Math.round(data.agingHours)}h` : ''}${data.businessImpact ? `<br/><strong>Impact:</strong> ${data.businessImpact}` : ''}</p>`;
+        const text = `Escalation created for ${data.orderNumber} (L${data.level}). Reason: ${data.reason}${data.agingHours != null ? ` | Aging: ${Math.round(data.agingHours)}h` : ''}${data.businessImpact ? ` | Impact: ${data.businessImpact}` : ''}`;
+        return { subject, html, text };
+      }
+      case 'escalation_resolved': {
+        const subject = `Escalation resolved: ${data.orderNumber}`;
+        const html = `<p><strong>Order:</strong> ${data.orderNumber}<br/><strong>Resolution:</strong> ${data.notes || 'Resolved'}${data.agingHours != null ? `<br/><strong>Aging at resolve:</strong> ${Math.round(data.agingHours)}h` : ''}</p>`;
+        const text = `Escalation resolved for ${data.orderNumber}.${data.agingHours != null ? ` Aging at resolve: ${Math.round(data.agingHours)}h.` : ''}`;
+        return { subject, html, text };
+      }
       case 'email_verification': {
         const subject = 'Verify Your Email Address - OMS Platform';
         const verificationUrl = data.verificationUrl || '#';
@@ -292,6 +357,22 @@ export class NotificationService {
   }
 
   async getMyNotifications(userId: string, roleName: RoleName, limit = 50) {
+    // Dev memory fallback
+    if (this.devNoMongo) {
+      const items = NotificationService.memoryStore
+        .filter(n => n.status === 'pending' || n.status === 'delivered')
+        .filter(n => {
+          const targets = n.targets || {} as any;
+          const userMatch = Array.isArray(targets.userIds) && targets.userIds.includes(userId);
+          const roleMatch = Array.isArray(targets.roles) && targets.roles.includes(roleName);
+          const allMatch = Array.isArray(targets.roles) && targets.roles.includes('__all__');
+          const noTargets = !targets.userIds && !targets.roles;
+          return userMatch || roleMatch || allMatch || noTargets;
+        })
+        .sort((a, b) => (b.createdAt?.getTime?.() || 0) - (a.createdAt?.getTime?.() || 0))
+        .slice(0, limit);
+      return items;
+    }
     const isSysAdmin = roleName.trim().toLowerCase().includes('system administrator');
     const filter: any = {
       status: { $in: ['pending', 'delivered'] },
@@ -431,6 +512,7 @@ export class NotificationService {
       try {
         await this.transporter.verify();
         this.isTransporterReady = true;
+        NotificationService.sharedReady = true;
       } catch (err) {
         console.warn('[notification] send (transporter not ready and verify failed):', options.subject, '->', options.to);
         return false;
@@ -477,6 +559,53 @@ export class NotificationService {
     } catch (error: any) {
       console.error('[notification] Failed to send templated email:', error.message);
       return false;
+    }
+  }
+
+  // Create a persisted in-app notification and emit via sockets
+  async createInAppNotification(arg: {
+    type: string;
+    title: string;
+    message: string;
+    targets: { userIds?: string[]; roles?: RoleName[] };
+    metadata?: any;
+  }): Promise<{ id: any } | null> {
+    try {
+      const notif: NotificationDoc = {
+        type: arg.type,
+        title: arg.title,
+        message: arg.message,
+        targets: arg.targets || {},
+        visibility: { systemAdminOnly: false },
+        metadata: arg.metadata || {},
+        status: 'pending',
+        createdAt: new Date()
+      };
+      // Dev memory fallback
+      if (this.devNoMongo) {
+        // Simulate insert id
+        (notif as any)._id = String(Date.now()) + Math.random().toString(36).slice(2);
+        NotificationService.memoryStore.unshift(notif);
+        try {
+          const { SocketService } = await import('./socket.service.ts');
+          SocketService.emitNotification({ ...(notif as any) });
+        } catch (error) {
+          console.warn('[notification] Failed to emit socket notification (dev):', error);
+        }
+        return { id: (notif as any)._id };
+      }
+
+      const ins = await this.notifications.insertOne(notif as any);
+      try {
+        const { SocketService } = await import('./socket.service.ts');
+        SocketService.emitNotification({ ...(notif as any), _id: ins.insertedId });
+      } catch (error) {
+        console.warn('[notification] Failed to emit socket notification:', error);
+      }
+      return { id: ins.insertedId };
+    } catch (error) {
+      console.error('[notification] Failed to create in-app notification:', (error as any)?.message || error);
+      return null;
     }
   }
 

@@ -74,7 +74,7 @@ WITH base_roles(name, description, permissions) AS (
       'Manage orders and escalations with FNO visibility',
       to_json(ARRAY[
         'orders:create','orders:read','orders:update','orders:delete','orders:assign','orders:escalate',
-        'escalations:view','escalations:resolve','customers:read','fno:view_logs','dashboard:read'
+        'escalations:view','escalations:resolve','escalations:assign','customers:read','fno:view_logs','dashboard:read'
       ]::text[])::jsonb
     ),
     (

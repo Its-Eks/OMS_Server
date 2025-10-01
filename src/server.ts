@@ -21,6 +21,8 @@ import emailTemplatesRouter from './Routes/email-templates.routes.ts';
 import abTestingRouter from './Routes/ab-testing.routes.ts';
 import workflowTemplatesRouter from './Routes/workflow-templates.routes.ts';
 import notificationsRouter from './Routes/notifications.routes.ts';
+import { EscalationService } from './services/escalation.service.ts';
+import { NotificationService } from './services/notification.service.ts';
 import { helmetConfig } from './Middleware/helmet.middleware.ts';
 import { generalRateLimit, authRateLimit } from './Middleware/rate-limit.middleware.ts';
 import { errorHandler, notFoundHandler } from './Middleware/error.middleware.ts';
@@ -58,6 +60,7 @@ class RobustServer {
   private healthCheckInterval: NodeJS.Timeout | null = null;
   private readonly maxStartupTime = 30000; // 30 seconds
   private slaScheduler: OnboardingSlaScheduler | null = null;
+  private escalationInterval: NodeJS.Timeout | null = null;
 
   constructor() {
     this.app = express();
@@ -143,6 +146,17 @@ class RobustServer {
         try {
           this.app.set('mongoClient', mongoClient);
           this.app.set('mongodb', mongodb);
+          // Initialize and expose NotificationService (email + in-app notifications)
+          try {
+            const notificationService = new NotificationService(mongodb as any);
+            // Best-effort background setup; do not block boot
+            notificationService.ensureIndexes?.().catch(() => {});
+            notificationService.ensureDefaultRules?.().catch(() => {});
+            this.app.set('notificationService', notificationService);
+            this.log('success', 'Notifications', 'Notification service initialized');
+          } catch (e: any) {
+            this.log('warn', 'Notifications', e?.message || 'Failed to initialize');
+          }
         } catch {}
         this.log(health.status === 'healthy' ? 'success' : 'error', 'MongoDB', 
           health.status === 'healthy' ? 'Connected' : health.details || 'Failed', health.latency);
@@ -380,6 +394,7 @@ class RobustServer {
       this.log('warn', 'System', `${signal} received, shutting down gracefully...`);
       
       if (this.healthCheckInterval) clearInterval(this.healthCheckInterval);
+      if (this.escalationInterval) clearInterval(this.escalationInterval);
       
       if (this.server) {
         this.server.close(() => {
@@ -447,6 +462,23 @@ class RobustServer {
           this.log('success', 'SLA Scheduler', 'Started');
         } catch (e: any) {
           this.log('warn', 'SLA Scheduler', e?.message || 'Failed to start');
+        }
+
+        // Start escalation checker (SLA-driven interval)
+        try {
+          const escService = new EscalationService(pgPool, mongoClient as any);
+          const intervalMs = Number(process.env.ESCALATION_CHECK_INTERVAL_MS || 15 * 60 * 1000);
+          this.escalationInterval = setInterval(async () => {
+            try {
+              await escService.checkAndEscalateOrders();
+            } catch (e: any) {
+              this.log('warn', 'Escalations', e?.message || 'Failed to run escalation check');
+            }
+          }, intervalMs);
+          this.log('success', 'Escalations', `Escalation monitor started (every ${Math.round(intervalMs/60000)} min)`);
+          // Remove duplicate SLA monitor to prevent double-escalations; SLA emails handled by OnboardingSlaScheduler
+        } catch (e: any) {
+          this.log('warn', 'Escalations', e?.message || 'Failed to start');
         }
 
         // Additional services can be initialized here if needed
