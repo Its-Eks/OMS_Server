@@ -580,8 +580,8 @@ export class ConfigurableWorkflowService {
 
   // Update orders.status and the linked onboarding step to reflect the new workflow state
   private async syncOrderAndOnboarding(orderId: string, stateName: string): Promise<void> {
-    // Update order row
-    await this.db.query('UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2', [stateName, orderId]);
+    // Update order row with explicit casts to avoid parameter type ambiguity
+    await this.db.query('UPDATE orders SET status = $1::text, current_state = $1::text, updated_at = NOW() WHERE id = $2::uuid', [stateName, orderId]);
 
     // Fetch order_type for per-type onboarding mapping
     const ord = await this.db.query('SELECT order_type FROM orders WHERE id = $1 LIMIT 1', [orderId]);

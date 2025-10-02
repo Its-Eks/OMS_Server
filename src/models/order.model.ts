@@ -11,6 +11,7 @@ export interface Order {
   fnoReference?: string;
   estimatedCompletionDate?: Date;
   actualCompletionDate?: Date;
+  isPaid?: boolean;
   createdAt: Date;
   updatedAt: Date;
   createdBy: string;

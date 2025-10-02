@@ -267,7 +267,7 @@ export class FNOService {
 
       // Advance order state for API submissions after reference is captured
       await client.query(
-        'UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2',
+        'UPDATE orders SET status = $1::text, current_state = $1::text, updated_at = NOW() WHERE id = $2::uuid',
         ['fno_submitted', orderId]
       );
 

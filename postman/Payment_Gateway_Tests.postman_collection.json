@@ -1,0 +1,295 @@
+{
+  "info": {
+    "name": "Payment Gateway Tests",
+    "description": "Test collection for payment gateway integration through OMS Server proxy",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{auth_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:3003",
+      "type": "string"
+    },
+    {
+      "key": "auth_token",
+      "value": "your_jwt_token_here",
+      "type": "string"
+    },
+    {
+      "key": "test_order_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "payment_link_id",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Authentication",
+      "item": [
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const response = pm.response.json();",
+                  "    if (response.token) {",
+                  "        pm.collectionVariables.set('auth_token', response.token);",
+                  "        console.log('Auth token saved:', response.token);",
+                  "    }",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@example.com\",\n  \"password\": \"password123\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "login"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Payment Gateway",
+      "item": [
+        {
+          "name": "Create Payment Link (Manual)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const response = pm.response.json();",
+                  "    if (response.success && response.data.paymentLinkId) {",
+                  "        pm.collectionVariables.set('payment_link_id', response.data.paymentLinkId);",
+                  "        console.log('Payment link created:', response.data.paymentLinkId);",
+                  "        console.log('Payment URL:', response.data.paymentUrl);",
+                  "    }",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"{{$guid}}\",\n  \"customerId\": \"{{$guid}}\",\n  \"customerEmail\": \"customer@example.com\",\n  \"customerName\": \"John Doe\",\n  \"orderType\": \"new_install\",\n  \"servicePackage\": {\n    \"name\": \"Fiber Premium 100/20\",\n    \"speed\": \"100/20 Mbps\",\n    \"price\": 899.00,\n    \"installationFee\": 500.00,\n    \"installationType\": \"professional_install\"\n  },\n  \"serviceAddress\": {\n    \"street\": \"123 Main Street\",\n    \"city\": \"Cape Town\",\n    \"province\": \"Western Cape\",\n    \"postalCode\": \"8001\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/payments/create",
+              "host": ["{{base_url}}"],
+              "path": ["payments", "create"]
+            }
+          }
+        },
+        {
+          "name": "Create Payment from Order",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const response = pm.response.json();",
+                  "    if (response.success && response.data.paymentLinkId) {",
+                  "        pm.collectionVariables.set('payment_link_id', response.data.paymentLinkId);",
+                  "        console.log('Payment link created from order:', response.data.paymentLinkId);",
+                  "    }",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"price\": \"899.00\",\n  \"installationFee\": \"500.00\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/payments/create-from-order/{{test_order_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["payments", "create-from-order", "{{test_order_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Get Payment Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/payments/{{payment_link_id}}/status",
+              "host": ["{{base_url}}"],
+              "path": ["payments", "{{payment_link_id}}", "status"]
+            }
+          }
+        },
+        {
+          "name": "Resend Payment Email",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/payments/{{payment_link_id}}/resend",
+              "host": ["{{base_url}}"],
+              "path": ["payments", "{{payment_link_id}}", "resend"]
+            }
+          }
+        },
+        {
+          "name": "Simulate Payment Webhook (Success)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"mock_peach_checkout_id\",\n  \"status\": \"completed\",\n  \"result\": {\n    \"code\": \"000.100.110\",\n    \"description\": \"Request successfully processed\"\n  },\n  \"mockData\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/payments/webhook",
+              "host": ["{{base_url}}"],
+              "path": ["payments", "webhook"]
+            }
+          }
+        },
+        {
+          "name": "Simulate Payment Webhook (Failed)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"mock_peach_checkout_id\",\n  \"status\": \"failed\",\n  \"result\": {\n    \"code\": \"800.400.500\",\n    \"description\": \"Transaction declined\"\n  },\n  \"mockData\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/payments/webhook",
+              "host": ["{{base_url}}"],
+              "path": ["payments", "webhook"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Order Management (for testing)",
+      "item": [
+        {
+          "name": "Create Test Order",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200 || pm.response.code === 201) {",
+                  "    const response = pm.response.json();",
+                  "    if (response.success && response.order && response.order.id) {",
+                  "        pm.collectionVariables.set('test_order_id', response.order.id);",
+                  "        console.log('Test order created:', response.order.id);",
+                  "    } else if (response.id) {",
+                  "        pm.collectionVariables.set('test_order_id', response.id);",
+                  "        console.log('Test order created:', response.id);",
+                  "    }",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"{{$guid}}\",\n  \"orderType\": \"new_install\",\n  \"priority\": \"normal\",\n  \"serviceAddress\": {\n    \"street\": \"123 Test Street\",\n    \"city\": \"Cape Town\",\n    \"province\": \"western-cape\",\n    \"postal_code\": \"8001\"\n  },\n  \"serviceDetails\": {\n    \"bandwidth\": \"100/20\",\n    \"serviceType\": \"fiber\",\n    \"installationType\": \"professional_install\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/orders",
+              "host": ["{{base_url}}"],
+              "path": ["orders"]
+            }
+          }
+        },
+        {
+          "name": "Get Test Order",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/orders/{{test_order_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["orders", "{{test_order_id}}"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
