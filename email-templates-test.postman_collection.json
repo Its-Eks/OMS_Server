@@ -1,0 +1,165 @@
+{
+  "info": {
+    "name": "Order Email Templates Testing",
+    "description": "Test collection for the simplified 2-email workflow system",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{jwt_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "jwt_token",
+      "value": "YOUR_JWT_TOKEN_HERE",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Seed Default Templates",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/orders-templates/seed-defaults",
+          "host": ["{{base_url}}"],
+          "path": ["orders-templates", "seed-defaults"]
+        }
+      }
+    },
+    {
+      "name": "2. Get All Templates",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/orders-templates",
+          "host": ["{{base_url}}"],
+          "path": ["orders-templates"]
+        }
+      }
+    },
+    {
+      "name": "3. Test New Installation - Scheduled",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"orderType\": \"new_installation\",\n  \"status\": \"scheduled\",\n  \"customerEmail\": \"test@example.com\",\n  \"templateData\": {\n    \"customerName\": \"John Doe\",\n    \"orderNumber\": \"ORD-TEST-001\",\n    \"serviceType\": \"Fiber 100 Mbps\",\n    \"installationDate\": \"October 15, 2025\",\n    \"appointmentTime\": \"9:00 AM - 12:00 PM\",\n    \"address\": \"123 Main Street, Anytown, ST 12345\",\n    \"technicianName\": \"Mike Johnson\",\n    \"estimatedDuration\": \"2-3 hours\",\n    \"contactNumber\": \"+1 (555) 123-4567\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/orders-templates/trigger",
+          "host": ["{{base_url}}"],
+          "path": ["orders-templates", "trigger"]
+        }
+      }
+    },
+    {
+      "name": "4. Test New Installation - Completed",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"orderType\": \"new_installation\",\n  \"status\": \"completed\",\n  \"customerEmail\": \"test@example.com\",\n  \"templateData\": {\n    \"customerName\": \"John Doe\",\n    \"orderNumber\": \"ORD-TEST-001\",\n    \"serviceType\": \"Fiber 100 Mbps\",\n    \"address\": \"123 Main Street, Anytown, ST 12345\",\n    \"activationDate\": \"October 15, 2025\",\n    \"wifiNetwork\": \"JohnDoe_Fiber\",\n    \"downloadSpeed\": \"100 Mbps\",\n    \"uploadSpeed\": \"100 Mbps\",\n    \"supportNumber\": \"+1 (555) 123-4567\",\n    \"customerPortalUrl\": \"https://portal.example.com\",\n    \"mobileAppName\": \"MyISP Mobile\",\n    \"billingNumber\": \"+1 (555) 123-4568\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/orders-templates/trigger",
+          "host": ["{{base_url}}"],
+          "path": ["orders-templates", "trigger"]
+        }
+      }
+    },
+    {
+      "name": "5. Test Service Change - Scheduled",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"orderType\": \"service_change\",\n  \"status\": \"scheduled\",\n  \"customerEmail\": \"test@example.com\",\n  \"templateData\": {\n    \"customerName\": \"Jane Smith\",\n    \"orderNumber\": \"ORD-TEST-002\",\n    \"currentService\": \"Fiber 50 Mbps\",\n    \"serviceType\": \"Fiber 200 Mbps\",\n    \"changeDate\": \"October 20, 2025\",\n    \"appointmentTime\": \"2:00 PM - 4:00 PM\",\n    \"technicianName\": \"Sarah Wilson\",\n    \"contactNumber\": \"+1 (555) 123-4567\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/orders-templates/trigger",
+          "host": ["{{base_url}}"],
+          "path": ["orders-templates", "trigger"]
+        }
+      }
+    },
+    {
+      "name": "6. Test Service Change - Completed",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"orderType\": \"service_change\",\n  \"status\": \"completed\",\n  \"customerEmail\": \"test@example.com\",\n  \"templateData\": {\n    \"customerName\": \"Jane Smith\",\n    \"orderNumber\": \"ORD-TEST-002\",\n    \"previousService\": \"Fiber 50 Mbps\",\n    \"serviceType\": \"Fiber 200 Mbps\",\n    \"address\": \"456 Oak Avenue, Anytown, ST 12345\",\n    \"completionDate\": \"October 20, 2025\",\n    \"downloadSpeed\": \"200 Mbps\",\n    \"uploadSpeed\": \"200 Mbps\",\n    \"supportNumber\": \"+1 (555) 123-4567\",\n    \"customerPortalUrl\": \"https://portal.example.com\",\n    \"billingNumber\": \"+1 (555) 123-4568\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/orders-templates/trigger",
+          "host": ["{{base_url}}"],
+          "path": ["orders-templates", "trigger"]
+        }
+      }
+    },
+    {
+      "name": "7. Preview Template (Optional)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/orders-templates/preview/TEMPLATE_ID_HERE?customerName=John Doe&orderNumber=ORD-123&serviceType=Fiber 100",
+          "host": ["{{base_url}}"],
+          "path": ["orders-templates", "preview", "TEMPLATE_ID_HERE"],
+          "query": [
+            {
+              "key": "customerName",
+              "value": "John Doe"
+            },
+            {
+              "key": "orderNumber",
+              "value": "ORD-123"
+            },
+            {
+              "key": "serviceType",
+              "value": "Fiber 100"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
