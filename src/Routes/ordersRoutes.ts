@@ -27,6 +27,11 @@ async function transitionOrder(req: Request, res: Response) {
       console.warn('[orders] Mongo client not initialized; using no-op stub for status transition');
     }
     const svc = new OrdersService(db, new FNOCommunicationService(mongo), new PolicyService(mongo));
+    // Pass notification service to orders service
+    const notificationService = req.app.get('notificationService');
+    if (notificationService) {
+      (svc as any).notificationService = notificationService;
+    }
     const userId: string = ((req as any).user?.userId as string | undefined) || 'system';
     const reason: string | undefined = typeof req.body?.reason === 'string' ? req.body.reason : undefined;
     const nextStatus: string = typeof req.body?.status === 'string' ? req.body.status : '';

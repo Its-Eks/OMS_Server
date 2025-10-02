@@ -11,6 +11,8 @@ const router = Router();
 
 router.use(authenticate);
 
+
+
 router.get('/my-escalations', authorize(['escalations:view']), getMyEscalations);
 // Manager/team visibility per PRD: show escalations assigned to direct reports
 router.get('/my-team', authorize(['escalations:view']), getTeamEscalations);
@@ -319,6 +321,80 @@ router.post('/workflow/:escalationId/transition', authorize(['escalations:resolv
     res.json({ success: true, data: out });
   } catch (e: any) {
     res.status(400).json({ success: false, error: { message: e.message } });
+  }
+});
+
+// Manual escalation helper: orders + eligible assignees in one call
+router.get('/manual/options', authorize(['escalations:view']), async (req: Request, res: Response) => {
+  const db: Pool = req.app.get('pgPool');
+  const q = String(req.query.q || '').trim();
+  const limit = Math.max(1, Math.min(parseInt(String(req.query.limit || '25')) || 25, 100));
+  try {
+    // 1) Active/ recent orders, optionally filtered by search query
+    const params: any[] = [];
+    let where = "(o.current_state IS NULL OR o.current_state NOT IN ('completed','cancelled'))";
+    if (q) {
+      params.push(`%${q}%`);
+      where += ` AND (o.order_number ILIKE $${params.length} OR CAST(o.id AS TEXT) ILIKE $${params.length} OR CAST(o.customer_id AS TEXT) ILIKE $${params.length})`;
+    }
+    params.push(limit);
+    const ordersSql = `
+      SELECT 
+        o.id, o.order_number, o.customer_id, o.priority, o.order_type, o.current_state, 
+        c.first_name || ' ' || c.last_name AS customer_name,
+        c.email AS customer_email,
+        o.created_at
+      FROM orders o
+      LEFT JOIN customers c ON c.id = o.customer_id
+      WHERE ${where}
+      ORDER BY o.created_at DESC
+      LIMIT $${params.length}`;
+    const orders = await db.query(ordersSql, params);
+
+    // 2) Eligible assignees. Start with Operations Manager / Escalations-related roles
+    const assignees = await db.query(`
+      SELECT 
+        u.id, u.first_name, u.last_name, u.email, r.name AS role_name
+      FROM users u
+      JOIN roles r ON r.id = u.role_id
+      WHERE u.is_active = true
+        AND (
+          r.name ILIKE '%operations%manager%'
+          OR r.name ILIKE '%operations manager%'
+          OR r.name ILIKE '%support%'
+          OR r.name ILIKE '%escalation%'
+        )
+      ORDER BY u.first_name ASC, u.last_name ASC
+    `);
+
+    // 3) Current load per assignee (open escalations)
+    const loadRows = await db.query(`
+      SELECT escalated_to AS user_id, COUNT(*) AS open_count
+      FROM escalations
+      WHERE escalated_to IS NOT NULL AND status <> 'resolved'
+      GROUP BY escalated_to
+    `);
+    const loadMap = new Map<string, number>();
+    for (const r of loadRows.rows) {
+      loadMap.set(String(r.user_id), parseInt(r.open_count, 10));
+    }
+    const assigneesWithLoad = assignees.rows.map((u: any) => ({
+      id: u.id,
+      name: `${u.first_name} ${u.last_name}`.trim(),
+      email: u.email,
+      role: u.role_name,
+      openEscalations: loadMap.get(String(u.id)) || 0
+    }));
+
+    res.json({
+      success: true,
+      data: {
+        orders: orders.rows,
+        assignees: assigneesWithLoad
+      }
+    });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: { message: e.message } });
   }
 });
 

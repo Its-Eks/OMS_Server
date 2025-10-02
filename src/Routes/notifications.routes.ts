@@ -40,6 +40,29 @@ router.get('/my', authenticate as any, (req, res) => controller.my(req, res));
  *   { "success": true, "data": { "updated": 2 } }
  */
 router.post('/read', authenticate as any, (req, res) => controller.markRead(req, res));
+/**
+ * DELETE /notifications/delete
+ * Headers:
+ *   - Authorization: Bearer <TOKEN>
+ * Body:
+ *   { "notificationIds": ["<notifId1>", "<notifId2>"] }
+ * Description:
+ *   Permanently deletes the specified notifications from the database.
+ * Sample Response:
+ *   { "success": true, "data": { "deleted": 2 } }
+ */
+router.delete('/delete', authenticate as any, (req, res) => controller.deleteRead(req, res));
+router.post('/delete', authenticate as any, (req, res) => controller.deleteRead(req, res));
+/**
+ * DELETE /notifications/delete-all
+ * Headers:
+ *   - Authorization: Bearer <TOKEN>
+ * Description:
+ *   Deletes ALL notifications from the database. Only System Administrators can use this endpoint.
+ * Sample Response:
+ *   { "success": true, "data": { "deleted": 52, "message": "All notifications deleted" } }
+ */
+router.delete('/delete-all', authenticate as any, (req, res) => controller.deleteAll(req, res));
 
 // Admin-only routes should be gated in middleware in real usage
 /**
@@ -101,6 +124,9 @@ router.post('/rules', authenticate as any, (req, res) => controller.upsertRule(r
  *   { "success": true, "data": { "id": "<insertedId>" } }
  */
 router.post('/events', (req, res) => controller.emitEvent(req, res));
+
+// Direct create (persist + socket) for targeted notifications
+router.post('/direct', authenticate as any, (req, res) => controller.createDirect(req, res));
 
 export default router;
 

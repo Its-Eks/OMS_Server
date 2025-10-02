@@ -38,8 +38,7 @@ export class SocketService {
       const user = (socket as any).user as JwtPayloadLike;
       const rooms: Room[] = [
         `user:${user.userId}`,
-        user.role ? `role:${user.role}` : '',
-        'all'
+        user.role ? `role:${user.role}` : ''
       ].filter(Boolean) as Room[];
       rooms.forEach((r) => socket.join(r));
     });
@@ -65,18 +64,11 @@ export class SocketService {
     }
     if (targets.roles && targets.roles.length) {
       targets.roles.forEach((role) => {
-        if (role === '__all__') {
-          io.to('all').emit('notification', payload);
-        } else {
-          io.to(`role:${role}`).emit('notification', payload);
-        }
+        io.to(`role:${role}`).emit('notification', payload);
         emitted = true;
       });
     }
-    if (!emitted) {
-      // If no specific targets provided, broadcast to all
-      io.to('all').emit('notification', payload);
-    }
+    // If no targets provided, do not broadcast implicitly
   }
 }
 
