@@ -64,9 +64,12 @@ export function authorize(permissions: string[]) {
 
     let hasPermission = isSysAdmin || permissions.some(permission => req.user!.permissions.includes(permission));
 
-    // Allow Operations Manager to assign escalations even if old JWT lacks refreshed permission
-    if (!hasPermission && isOpsManager && permissions.includes('escalations:assign')) {
-      hasPermission = true;
+    // Allow Operations Manager to perform common escalation actions even if older JWT lacks refreshed permissions
+    if (!hasPermission && isOpsManager) {
+      const omAllowed = ['escalations:assign', 'escalations:escalate', 'escalations:resolve'];
+      if (permissions.some(p => omAllowed.includes(p))) {
+        hasPermission = true;
+      }
     }
 
     if (!hasPermission) {

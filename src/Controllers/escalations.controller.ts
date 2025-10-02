@@ -259,10 +259,27 @@ export async function createEscalation(req: Request, res: Response) {
   const { orderId, taskId, escalationReason, escalationLevel, escalatedTo, priority, justification } = req.body;
   const escalatedFrom = (req as any).user?.userId;
   try {
+    // Allow clients to pass either an order UUID or an order_number string
+    let resolvedOrderId: string | null = null;
+    const rawOrderId = String(orderId || '').trim();
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (rawOrderId) {
+      if (uuidRegex.test(rawOrderId)) {
+        resolvedOrderId = rawOrderId;
+      } else {
+        // Treat as order_number and resolve to UUID
+        const lookup = await db.query(`SELECT id FROM orders WHERE order_number = $1 LIMIT 1`, [rawOrderId]);
+        if (!lookup.rows[0]?.id) {
+          return res.status(400).json({ success: false, error: { message: `Order not found for order_number: ${rawOrderId}` } });
+        }
+        resolvedOrderId = String(lookup.rows[0].id);
+      }
+    }
+
     const result = await db.query(
       `INSERT INTO escalations (order_id, task_id, escalation_level, escalated_from, escalated_to, escalation_reason, status, escalation_type, priority)
        VALUES ($1, $2, $3, $4, $5, $6, 'open', 'manual', $7) RETURNING id`,
-      [orderId || null, taskId || null, escalationLevel || 1, escalatedFrom, escalatedTo, escalationReason, priority || 'normal']
+      [resolvedOrderId || null, taskId || null, escalationLevel || 1, escalatedFrom, escalatedTo, escalationReason, priority || 'normal']
     );
 
     // Start escalation workflow instance
@@ -271,22 +288,69 @@ export async function createEscalation(req: Request, res: Response) {
       await wf.startForEscalation(result.rows[0].id);
     } catch {}
 
+    // Get order details for better notifications
+    const orderDetails = await db.query(`
+      SELECT o.order_number, o.service_type, o.priority as order_priority,
+             c.first_name, c.last_name, c.email as customer_email
+      FROM orders o
+      LEFT JOIN customers c ON c.id = o.customer_id
+      WHERE o.id = $1
+    `, [resolvedOrderId]);
+    
+    const order = orderDetails.rows[0];
+    const customerName = order ? `${order.first_name} ${order.last_name}`.trim() : 'Unknown Customer';
+
     // In-app notification for creation (route to Operations Managers by role)
     try {
       const notificationService = req.app.get('notificationService');
       if (notificationService?.createInAppNotification) {
+        // Notify Operations Managers
         await notificationService.createInAppNotification({
           type: 'escalation_created',
-          title: `Escalation created for order ${orderId}`,
-          message: `Level ${escalationLevel || 1}${priority ? ` · ${priority}` : ''}${escalationReason ? ` · ${escalationReason}` : ''}`,
+          title: `New Escalation: ${order?.order_number || rawOrderId}`,
+          message: `Level ${escalationLevel || 1} escalation created for ${customerName}. Priority: ${priority || 'normal'}. Reason: ${escalationReason}`,
           targets: { roles: ['Operations Manager'] },
-          metadata: { escalationId: result.rows[0].id, orderId, level: escalationLevel || 1, priority, escalationReason }
+          metadata: { 
+            escalationId: result.rows[0].id, 
+            orderId: resolvedOrderId || rawOrderId, 
+            orderNumber: order?.order_number,
+            level: escalationLevel || 1, 
+            priority: priority || 'normal', 
+            escalationReason,
+            customerName,
+            url: '/escalations'
+          }
         });
+
+        // If assigned to specific user, notify them directly
+        if (escalatedTo) {
+          const assignedUser = await db.query('SELECT first_name, last_name, email FROM users WHERE id = $1', [escalatedTo]);
+          const assignee = assignedUser.rows[0];
+          if (assignee) {
+            await notificationService.createInAppNotification({
+              type: 'escalation_assigned_to_me',
+              title: `Escalation Assigned: ${order?.order_number || rawOrderId}`,
+              message: `You have been assigned a level ${escalationLevel || 1} escalation for ${customerName}.`,
+              targets: { userIds: [escalatedTo] },
+              metadata: { 
+                escalationId: result.rows[0].id, 
+                orderId: resolvedOrderId || rawOrderId,
+                orderNumber: order?.order_number,
+                level: escalationLevel || 1, 
+                priority: priority || 'normal',
+                customerName,
+                url: '/escalations'
+              }
+            });
+          }
+        }
       }
-    } catch {}
+    } catch (notifError) {
+      console.warn('Failed to send escalation notifications:', notifError);
+    }
 
     try {
-      await new AuditService(db).logAction(String(escalatedFrom || ''), 'manual_escalation', 'order', String(orderId || ''), {}, { escalationId: result.rows[0].id, level: escalationLevel, justification }, String(req.ip || ''), String(req.get('User-Agent') || ''));
+      await new AuditService(db).logAction(String(escalatedFrom || ''), 'manual_escalation', 'order', String(resolvedOrderId || rawOrderId || ''), {}, { escalationId: result.rows[0].id, level: escalationLevel, justification }, String(req.ip || ''), String(req.get('User-Agent') || ''));
     } catch {}
 
     // Invalidate escalations and dashboard caches
