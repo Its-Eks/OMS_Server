@@ -48,7 +48,7 @@ export async function getOrders(req: Request, res: Response) {
       SELECT o.id, o.order_number, o.customer_id, o.order_type, o.service_type, o.status as current_state, 
              o.priority, o.installation_address as service_address, o.service_package, o.service_details,
              o.fno_id, o.fno_reference, o.created_at, o.updated_at, o.estimated_completion,
-             c.first_name, c.last_name, c.email as customer_email,
+             o.is_paid, c.first_name, c.last_name, c.email as customer_email,
              f.name as fno_name, f.code as fno_code
       FROM orders o
       LEFT JOIN customers c ON c.id = o.customer_id
@@ -76,6 +76,7 @@ export async function getOrders(req: Request, res: Response) {
       created_at: row.created_at,
       updated_at: row.updated_at,
       estimated_completion: row.estimated_completion,
+      isPaid: row.is_paid || false,
       customer: {
         first_name: row.first_name,
         last_name: row.last_name,
@@ -125,12 +126,15 @@ export async function createOrder(req: Request, res: Response) {
       createdBy
     );
 
+    // Re-read with standard normalization so response fields are complete/consistent
+    const normalized = await service.getOrder(order.id);
+
     // Invalidate orders and dashboard cache
     const cache = new CacheService(redis);
     await cache.delByPrefix(buildCacheKey(['orders:list']));
     await cache.delByPrefix(buildCacheKey(['dashboard:data']));
 
-    res.status(201).json({ success: true, orderId: order.id, order });
+    res.status(201).json({ success: true, orderId: order.id, order: normalized });
   } catch (error: any) {
     res.status(500).json({ success: false, error: { message: error.message } });
   }
@@ -184,6 +188,13 @@ export async function updateOrder(req: Request, res: Response) {
       try {
         await service.transitionToEnrichedInternal(orderId, (req as any).user?.userId || 'system', 'Order enriched via enrichment form');
         const after = await service.getOrder(orderId);
+        // Invalidate caches after transition
+        try {
+          const redis = req.app.get('redis');
+          const cache = new CacheService(redis);
+          await cache.delByPrefix(buildCacheKey(['orders:list']));
+          await cache.delByPrefix(buildCacheKey(['dashboard:data']));
+        } catch {}
         return res.json({ success: true, order: after });
       } catch (e: any) {
         // If transition fails, still return the updated order, but include warning
@@ -197,11 +208,26 @@ export async function updateOrder(req: Request, res: Response) {
       try {
         await service.transitionOrder(orderId, 'fno_submitted' as any, (req as any).user?.userId || 'system', 'Submitted to FNO via submission form');
         const after = await service.getOrder(orderId);
+        // Invalidate caches after transition
+        try {
+          const redis = req.app.get('redis');
+          const cache = new CacheService(redis);
+          await cache.delByPrefix(buildCacheKey(['orders:list']));
+          await cache.delByPrefix(buildCacheKey(['dashboard:data']));
+        } catch {}
         return res.json({ success: true, order: after });
       } catch (e: any) {
         return res.json({ success: true, order: updated, warning: e?.message || 'Failed to auto-transition to fno_submitted' });
       }
     }
+
+    // Invalidate caches after standard update as well
+    try {
+      const redis = req.app.get('redis');
+      const cache = new CacheService(redis);
+      await cache.delByPrefix(buildCacheKey(['orders:list']));
+      await cache.delByPrefix(buildCacheKey(['dashboard:data']));
+    } catch {}
 
     res.json({ success: true, order: updated });
   } catch (error: any) {

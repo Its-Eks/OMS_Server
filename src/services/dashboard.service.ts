@@ -127,7 +127,7 @@ export class DashboardService {
         o.id,
         o.order_number,
         o.priority,
-        o.current_state as status,
+        o.status as status,
         o.created_at,
         CONCAT(c.first_name, ' ', c.last_name) as customer_name,
         o.service_type

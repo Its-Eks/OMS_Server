@@ -23,6 +23,11 @@ export class OrdersService {
     this.policyService = policyService;
   }
 
+  private isUuidLike(value: unknown): boolean {
+    if (typeof value !== 'string') return false;
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+  }
+
   async createOrder(orderData: any, createdBy: string): Promise<Order> {
     // Validate order data
     await this.validateOrderData(orderData);
@@ -45,9 +50,9 @@ export class OrdersService {
     // Create order
     const result = await this.db.query(
       `INSERT INTO orders (
-        customer_id, order_number, order_type, status, priority, 
-        service_address, service_details, created_by, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW()) 
+        customer_id, order_number, order_type, status, priority,
+        installation_address, service_details, created_by, assigned_to, created_at, updated_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
       RETURNING *`,
       [
         orderData.customerId,
@@ -57,6 +62,7 @@ export class OrdersService {
         orderData.priority || 'medium',
         JSON.stringify(orderData.serviceAddress),
         JSON.stringify(orderData.serviceDetails),
+        createdBy,
         createdBy
       ]
     );
@@ -104,13 +110,14 @@ export class OrdersService {
          order_type AS "orderType",
          status,
          priority,
-         service_address AS "serviceAddress",
+         installation_address AS "serviceAddress",
          service_details AS "serviceDetails",
          fno_id AS "fnoId",
          fno_reference AS "fnoReference",
          created_by AS "createdBy",
          assigned_to AS "assignedTo",
          estimated_completion AS "estimatedCompletion",
+         is_paid AS "isPaid",
          actual_completion AS "actualCompletion",
          created_at AS "createdAt",
          updated_at AS "updatedAt",
@@ -124,7 +131,29 @@ export class OrdersService {
 
   async getOrdersByCustomer(customerId: string): Promise<Order[]> {
     const result = await this.db.query(
-      'SELECT * FROM orders WHERE customer_id = $1 ORDER BY created_at DESC',
+      `SELECT 
+         id,
+         order_number AS "orderNumber",
+         customer_id AS "customerId",
+         order_type AS "orderType",
+         status,
+         priority,
+         installation_address AS "serviceAddress",
+         service_details AS "serviceDetails",
+         fno_id AS "fnoId",
+         fno_reference AS "fnoReference",
+         created_by AS "createdBy",
+         assigned_to AS "assignedTo",
+         estimated_completion AS "estimatedCompletion",
+         is_paid AS "isPaid",
+         actual_completion AS "actualCompletion",
+         created_at AS "createdAt",
+         updated_at AS "updatedAt",
+         estimated_completion_date AS "estimatedCompletionDate",
+         actual_completion_date AS "actualCompletionDate"
+       FROM orders 
+       WHERE customer_id = $1 
+       ORDER BY created_at DESC`,
       [customerId]
     );
     return result.rows;
@@ -198,19 +227,34 @@ export class OrdersService {
         }
       }
 
-      await this.configurableWorkflow.executeTransition(
+    const executedBy = this.isUuidLike(changedBy) ? (changedBy as string) : null;
+    await this.configurableWorkflow.executeTransition(
         workflowInstance.id,
         targetStateId,
-        changedBy || 'system',
+      executedBy || null as any,
         changeReason || `Transition to ${newStatus}`,
         { fnoId: order.fnoId, validationPassed: true }
       );
 
       // Update order status to match workflow
       await this.db.query(
-        'UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2',
+        'UPDATE orders SET status = $1::text, current_state = $1::text, updated_at = NOW() WHERE id = $2::uuid',
         [newStatus, orderId]
       );
+
+      // After workflow execution, sync order current_state to authoritative workflow state name
+      try {
+        const authoritativeState = await this.configurableWorkflow.getCurrentStateName(orderId);
+        if (authoritativeState && typeof authoritativeState === 'string') {
+          await this.db.query(
+            'UPDATE orders SET current_state = $1::text, status = $1::text, updated_at = NOW() WHERE id = $2::uuid',
+            [authoritativeState, orderId]
+          );
+        }
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn('[orders] Failed to sync order current_state from workflow:', (e as any)?.message || e);
+      }
 
       console.log(`[orders] Executed workflow transition for order ${orderId} to ${newStatus}`);
     } else {
@@ -219,7 +263,7 @@ export class OrdersService {
 
     // Update order in database
     await this.db.query(
-      'UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2',
+      'UPDATE orders SET status = $1::text, current_state = $1::text, updated_at = NOW() WHERE id = $2::uuid',
       [newStatus, orderId]
     );
 
@@ -228,9 +272,10 @@ export class OrdersService {
 
     // Persist state change history (legacy support)
     try {
+      const actorId = this.isUuidLike(changedBy) ? (changedBy as string) : null;
       await this.db.query(
-        'INSERT INTO order_state_history (order_id, from_state, to_state, changed_by, change_reason, created_at) VALUES ($1, $2, $3, $4, $5, NOW())',
-        [orderId, order.status, newStatus, changedBy || null, changeReason || null]
+        'INSERT INTO order_state_history (order_id, from_state, to_state, changed_by, change_reason, created_at) VALUES ($1::uuid, $2::text, $3::text, $4::uuid, $5::text, NOW())',
+        [orderId, order.status, newStatus, actorId, changeReason || null]
       );
     } catch (e) {
       // Do not block the main transition on history failure, but log it
@@ -293,20 +338,20 @@ export class OrdersService {
       );
 
       await this.db.query(
-        'UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2',
+        'UPDATE orders SET status = $1::text, current_state = $1::text, updated_at = NOW() WHERE id = $2::uuid',
         [targetStatus, orderId]
       );
     } else {
       // Legacy fallback
       await this.db.query(
-        'UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2',
+        'UPDATE orders SET status = $1::text, current_state = $1::text, updated_at = NOW() WHERE id = $2::uuid',
         [targetStatus, orderId]
       );
     }
 
     try {
       await this.db.query(
-        'INSERT INTO order_state_history (order_id, from_state, to_state, changed_by, change_reason, created_at) VALUES ($1, $2, $3, $4, $5, NOW())',
+        'INSERT INTO order_state_history (order_id, from_state, to_state, changed_by, change_reason, created_at) VALUES ($1::uuid, $2::text, $3::text, $4::uuid, $5::text, NOW())',
         [orderId, order.status, targetStatus, changedBy || null, changeReason || 'Order enriched']
       );
     } catch {}
@@ -330,15 +375,15 @@ export class OrdersService {
 
     // Update order
     await this.db.query(
-      'UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2',
+      'UPDATE orders SET status = $1::text, current_state = $1::text, updated_at = NOW() WHERE id = $2::uuid',
       ['cancelled', orderId]
     );
 
     // Record cancellation in history
     try {
       await this.db.query(
-        'INSERT INTO order_state_history (order_id, from_state, to_state, changed_by, change_reason, created_at) VALUES ($1, $2, $3, $4, $5, NOW())',
-        [orderId, order.status, 'cancelled', 'system', reason || 'Order cancelled']
+        'INSERT INTO order_state_history (order_id, from_state, to_state, changed_by, change_reason, created_at) VALUES ($1::uuid, $2::text, $3::text, $4::uuid, $5::text, NOW())',
+        [orderId, order.status, 'cancelled', null, reason || 'Order cancelled']
       );
     } catch (e) {
       console.warn('[orders] Failed to write cancellation order_state_history:', (e as any)?.message || e);

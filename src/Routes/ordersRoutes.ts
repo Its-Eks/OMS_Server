@@ -3,6 +3,7 @@ import { authenticate, authorize } from '../Middleware/authMiddleware.ts';
 import { getOrders, createOrder, getOrderById, updateOrder } from '../Controllers/orders.controller.ts';
 import { normalizeBodyToSnakeCase } from '../Middleware/case-transform.middleware.ts';
 import { OrdersService } from '../services/orders.service.ts';
+import { CacheService, buildCacheKey } from '../services/cache.service.ts';
 import { FNOCommunicationService } from '../services/fno-communication.service.ts';
 import { PolicyService } from '../services/policy.service.ts';
 import type { Request, Response } from 'express';
@@ -34,6 +35,15 @@ async function transitionOrder(req: Request, res: Response) {
       return res.status(400).json({ success: false, error: { message: 'status is required' } });
     }
     const updated = await svc.transitionOrder(req.params.id, nextStatus, userId, reason);
+
+    // Invalidate orders and dashboard cache after transition
+    try {
+      const redis = req.app.get('redis');
+      const cache = new CacheService(redis);
+      await cache.delByPrefix(buildCacheKey(['orders:list']));
+      await cache.delByPrefix(buildCacheKey(['dashboard:data']));
+    } catch {}
+
     res.json({ success: true, order: updated });
   } catch (e: any) {
     res.status(400).json({ success: false, error: { message: e?.message || 'Failed to transition order' } });
@@ -119,24 +129,29 @@ async function getOrderHistory(req: Request, res: Response) {
     
     // Get legacy order state history
     const legacyResult = await db.query(
-      `SELECT id, order_id, from_state, to_state, changed_by, change_reason, created_at
-       FROM order_state_history
-       WHERE order_id = $1
-       ORDER BY created_at ASC`,
+      `SELECT osh.id, osh.order_id, osh.from_state, osh.to_state, osh.changed_by,
+              u.first_name AS actor_first_name, u.last_name AS actor_last_name,
+              osh.change_reason, osh.created_at
+         FROM order_state_history osh
+         LEFT JOIN users u ON u.id = osh.changed_by
+        WHERE osh.order_id = $1
+        ORDER BY osh.created_at ASC`,
       [req.params.id]
     );
     
     // Get workflow execution history
     const workflowResult = await db.query(
-      `SELECT weh.id, weh.instance_id, weh.from_state_id, weh.to_state_id, weh.executed_by, 
+      `SELECT weh.id, weh.instance_id, weh.from_state_id, weh.to_state_id, weh.executed_by,
+              u.first_name AS actor_first_name, u.last_name AS actor_last_name,
               weh.execution_reason, weh.execution_data, weh.executed_at, weh.duration_seconds,
               ws_from.state_name as from_state_name, ws_to.state_name as to_state_name
-       FROM workflow_execution_history weh
-       JOIN workflow_instances wi ON weh.instance_id = wi.id
-       LEFT JOIN workflow_states ws_from ON weh.from_state_id = ws_from.id
-       LEFT JOIN workflow_states ws_to ON weh.to_state_id = ws_to.id
-       WHERE wi.order_id = $1
-       ORDER BY weh.executed_at ASC`,
+         FROM workflow_execution_history weh
+         JOIN workflow_instances wi ON weh.instance_id = wi.id
+         LEFT JOIN workflow_states ws_from ON weh.from_state_id = ws_from.id
+         LEFT JOIN workflow_states ws_to ON weh.to_state_id = ws_to.id
+         LEFT JOIN users u ON u.id = weh.executed_by
+        WHERE wi.order_id = $1
+        ORDER BY weh.executed_at ASC`,
       [req.params.id]
     );
     

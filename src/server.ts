@@ -30,7 +30,8 @@ import { register } from 'prom-client';
 import { mongoClient, mongodb } from './Database/main.ts';
 import customerRouter from './Routes/customer-hybrid.routes.ts';
 import { OnboardingSlaScheduler } from './services/onboarding-sla.scheduler.ts';
-import dashboardRouter from './Routes/dashboard.routes.ts'; 
+import dashboardRouter from './Routes/dashboard.routes.ts';
+import paymentRouter from './Routes/paymentRoutes.ts'; 
 
 dotenv.config();
 
@@ -307,6 +308,7 @@ class RobustServer {
     this.app.use('/workflow-templates', workflowTemplatesRouter);
     this.app.use('/notifications', notificationsRouter);
     this.app.use('/customers', customerRouter);
+    this.app.use('/payments', paymentRouter);
 
     // Health endpoints
     this.app.get('/health', async (req, res) => {
