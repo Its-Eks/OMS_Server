@@ -195,8 +195,11 @@ router.post('/:id/payment/success', async (req: Request, res: Response) => {
 
     const result = await db.query(
       `UPDATE orders 
-         SET status = 'payment_received', updated_at = NOW()
-       WHERE id = $1 AND status <> 'payment_received'
+         SET status = 'payment_received', 
+             is_paid = TRUE,
+             paid_at = COALESCE(paid_at, NOW()),
+             updated_at = NOW()
+       WHERE id = $1 AND (status <> 'payment_received' OR is_paid IS DISTINCT FROM TRUE)
        RETURNING id`,
       [orderId]
     );
