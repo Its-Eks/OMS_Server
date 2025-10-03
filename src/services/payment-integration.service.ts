@@ -95,8 +95,21 @@ export class PaymentIntegrationService {
       );
 
       if (response.data.success) {
-        console.log(`[PaymentIntegration] Payment link created for order ${orderId}: ${response.data.paymentLink.url}`);
-        return response.data.paymentLink;
+        const paymentUrl = response.data?.data?.paymentUrl;
+        const paymentLinkId = response.data?.data?.paymentLinkId;
+        const expiresAt = response.data?.data?.expiresAt;
+        if (!paymentUrl) {
+          throw new Error('paymentUrl missing in onboarding response');
+        }
+        console.log(`[PaymentIntegration] Payment link created for order ${orderId}: ${paymentUrl}`);
+        return {
+          id: paymentLinkId,
+          url: paymentUrl,
+          amount: 0,
+          currency: 'ZAR',
+          status: 'pending',
+          expiresAt: expiresAt || ''
+        } as PaymentLink;
       } else {
         console.error(`[PaymentIntegration] Failed to create payment link for order ${orderId}:`, response.data.error);
         return null;

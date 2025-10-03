@@ -19,82 +19,36 @@ router.post('/register', authenticate, authorize(['admin:manage_users']), async 
   const redis = req.app.get('redis');
   try {
     const userId = await registerUser(db, redis, req.body);
-    
-    // Generate non-expiring setup token instead of verification token
-    const { UserSetupService } = await import('../services/user-setup.service.ts');
-    const setupToken = await UserSetupService.generateSetupToken(db, userId);
-    
-    const backendUrl = process.env.BACKEND_URL || 'http://localhost:3003';
-    const clientUrl = process.env.APP_URL || `https://oms-client-01ry.onrender.com`;
-    const setupLink = `${backendUrl}/auth/setup?token=${encodeURIComponent(setupToken)}`;
+    // Generate verification token and send email
+    const token = await generateEmailVerificationToken(db, userId);
+    const appUrl =  process.env.APP_URL || `https://oms-server-ntlv.onrender.com/`;
+    const verifyLink = `${appUrl}/auth/verify-email-page?token=${encodeURIComponent(token)}`;
 
     let emailPreviewUrl: string | undefined;
     try {
-      // Look up user details for email
-      const result = await db.query('SELECT email, first_name, last_name FROM users WHERE id = $1', [userId]);
-      const userInfo = result.rows[0];
-      const toEmail = userInfo?.email as string;
-      const firstName = userInfo?.first_name || 'there';
-      
-      // Improved welcome email template
-      const emailHtml = `
-        <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #ffffff; border: 1px solid #e9ecef;">
-          <div style="background: #000; padding: 40px; text-align: center;">
-            <h1 style="color: white; margin: 0; font-size: 28px;">Welcome to OMS</h1>
-            <p style="color: #f8f9fa; margin: 15px 0 0 0; font-size: 16px;">Your account is ready to be activated</p>
-          </div>
-          <div style="padding: 40px;">
-            <p style="font-size: 18px; color: #333; margin-bottom: 25px;">Hi ${firstName},</p>
-            
-            <p style="color: #555; line-height: 1.6; margin-bottom: 25px;">
-              Your OMS account has been created! To get started, please click the link below to verify your email and set up your password.
-            </p>
-            
-            <div style="text-align: center; margin: 35px 0;">
-              <a href="${setupLink}" style="background: #000; color: white; padding: 15px 30px; text-decoration: none; border-radius: 4px; font-weight: 500; display: inline-block;">
-                Complete Account Setup
-              </a>
-            </div>
-            
-            <div style="background: #f8f9fa; border-left: 4px solid #000; padding: 20px; margin: 25px 0; border-radius: 0 4px 4px 0;">
-              <h3 style="margin: 0 0 10px 0; color: #333; font-size: 16px;">What happens next:</h3>
-              <ol style="color: #555; margin: 10px 0; padding-left: 20px; line-height: 1.8;">
-                <li>Click the setup link above</li>
-                <li>Verify your email address</li>
-                <li>Create your secure password</li>
-                <li>Access the OMS platform</li>
-              </ol>
-            </div>
-            
-            <p style="color: #666; font-size: 14px; margin-top: 30px;">
-              <strong>Note:</strong> This setup link does not expire, so you can complete your account setup at your convenience.
-            </p>
-            
-            <p style="color: #666; font-size: 14px;">
-              If you did not expect this email or need assistance, please contact your system administrator.
-            </p>
-          </div>
-        </div>
-      `;
+      // Look up email to send to
+      const result = await db.query('SELECT email, first_name FROM users WHERE id = $1', [userId]);
+      const toEmail = result.rows[0]?.email as string;
+      const firstName = (result.rows[0]?.first_name as string) || 'there';
+      const emailHtml = [
+        `<p>Hi ${firstName},</p>`,
+        `<p>Welcome to OMS. Please verify your email address by clicking the link below:</p>`,
+        `<p><a href="${verifyLink}">Verify my email</a></p>`,
+        `<p>This link will expire in 24 hours. If you did not expect this email, you can ignore it.</p>`
+      ].join('\n');
 
-      const { sendEmail } = await import('../services/notification.service.ts');
       const resultSend = await sendEmail({
         to: toEmail,
-        subject: 'Welcome to OMS - Complete Your Account Setup',
+        subject: 'Verify your email to activate your OMS account',
         html: emailHtml
       });
       emailPreviewUrl = (resultSend as any)?.previewUrl;
     } catch (mailError) {
       // Do not fail user creation if email sending fails
-      console.warn('Failed to send setup email:', mailError);
+      console.warn('Failed to send verification email:', mailError);
     }
 
-    const responseBody: any = { 
-      success: true, 
-      userId, 
-      setupToken,
-      message: 'User created successfully! Setup email sent to user.'
-    };
+    const responseBody: any = { success: true, userId, verificationToken: token };
     if (emailPreviewUrl && process.env.NODE_ENV !== 'production') {
       responseBody.emailPreviewUrl = emailPreviewUrl;
     }

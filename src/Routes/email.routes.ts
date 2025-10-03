@@ -15,8 +15,8 @@ router.get('/test', async (req, res) => {
 
 router.post('/send', async (req, res) => {
   try {
-    // Simple service authentication check
-    const serviceApiKey = req.headers['x-service-api-key'] as string;
+    // Simple service authentication check (expect x-service-key)
+    const serviceApiKey = (req.headers['x-service-key'] || req.headers['x-service-api-key']) as string;
     const expectedApiKey = process.env.ONBOARDING_SERVICE_API_KEY;
     
     if (serviceApiKey && expectedApiKey && serviceApiKey === expectedApiKey) {

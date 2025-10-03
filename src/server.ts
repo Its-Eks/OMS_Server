@@ -307,8 +307,6 @@ class RobustServer {
     this.app.use('/ab-testing', abTestingRouter);
     this.app.use('/workflow-templates', workflowTemplatesRouter);
     this.app.use('/notifications', notificationsRouter);
-    this.app.use('/orders-templates', (await import('./Routes/orders-templates.routes.ts')).default);
-    this.app.use('/auth', (await import('./Routes/user-setup.routes.ts')).default);
     this.app.use('/customers', customerRouter);
     this.app.use('/payments', paymentRouter);
 
