@@ -247,10 +247,12 @@ export class PaymentIntegrationService {
     try {
       console.log(`[PaymentIntegration] Handling payment completion for order: ${orderId}`);
 
-      // Update order status to indicate payment received
+      // Idempotent update: mark as paid if not already
       await this.db.query(
-        'UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2',
-        ['payment_received', orderId as unknown as string]
+        `UPDATE orders 
+           SET status = 'payment_received', updated_at = NOW()
+         WHERE id = $1 AND status <> 'payment_received'`,
+        [orderId as unknown as string]
       );
 
       console.log(`[PaymentIntegration] Order ${orderId} marked as payment received`);
