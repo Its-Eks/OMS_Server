@@ -343,26 +343,12 @@ export class NotificationService {
 
   async ensureDefaultRules(): Promise<void> {
     const defaults: NotificationRuleDoc[] = [
-      // System admin only - user management events
       { eventType: 'user_first_login', routeTo: { roles: ['System Administrator'] }, systemAdminOnly: true, dedupeWindowMinutes: 1440, createdAt: new Date() },
       { eventType: 'password_link_expired', routeTo: { roles: ['System Administrator'] }, systemAdminOnly: true, dedupeWindowMinutes: 60, createdAt: new Date() },
-      { eventType: 'email_verification_needed', routeTo: { roles: ['System Administrator'] }, systemAdminOnly: true, dedupeWindowMinutes: 60, createdAt: new Date() },
-      
-      // Operations Manager - operational events
-      { eventType: 'escalation_created', routeTo: { roles: ['Operations Manager'] }, systemAdminOnly: false, dedupeWindowMinutes: 0, createdAt: new Date() },
-      { eventType: 'escalation_assigned', routeTo: { roles: ['Operations Manager'] }, systemAdminOnly: false, dedupeWindowMinutes: 0, createdAt: new Date() },
-      { eventType: 'escalation_resolved', routeTo: { roles: ['Operations Manager'] }, systemAdminOnly: false, dedupeWindowMinutes: 0, createdAt: new Date() },
-      { eventType: 'order_status_change', routeTo: { roles: ['Operations Manager'] }, systemAdminOnly: false, dedupeWindowMinutes: 5, createdAt: new Date() },
-      
-      // FNO events
       { eventType: 'fno_submit_api', routeTo: { roles: ['Operations Manager'] }, systemAdminOnly: false, dedupeWindowMinutes: 0, createdAt: new Date() },
       { eventType: 'fno_submit_manual', routeTo: { roles: ['Application Administrator'] }, systemAdminOnly: false, dedupeWindowMinutes: 0, createdAt: new Date() },
       { eventType: 'fno_manual_completed', routeTo: { roles: ['Operations Manager', 'Application Administrator'] }, systemAdminOnly: false, dedupeWindowMinutes: 0, createdAt: new Date() },
-      
-      // Individual user notifications (targeted by userId, not role)
-      { eventType: 'escalation_assigned_to_me', routeTo: { userIds: [] }, systemAdminOnly: false, dedupeWindowMinutes: 0, createdAt: new Date() },
-      { eventType: 'order_assigned_to_me', routeTo: { userIds: [] }, systemAdminOnly: false, dedupeWindowMinutes: 0, createdAt: new Date() },
-      { eventType: 'task_assigned_to_me', routeTo: { userIds: [] }, systemAdminOnly: false, dedupeWindowMinutes: 0, createdAt: new Date() }
+      { eventType: 'email_verification_needed', routeTo: { roles: ['System Administrator'] }, systemAdminOnly: true, dedupeWindowMinutes: 60, createdAt: new Date() }
     ];
     
     for (const rule of defaults) {
@@ -373,65 +359,35 @@ export class NotificationService {
   async getMyNotifications(userId: string, roleName: RoleName, limit = 50) {
     // Dev memory fallback
     if (this.devNoMongo) {
-      const normalizedRole = String(roleName || '').trim().toLowerCase();
-      const isSysAdmin = normalizedRole === 'system administrator';
       const items = NotificationService.memoryStore
         .filter(n => n.status === 'pending' || n.status === 'delivered')
         .filter(n => {
           const targets = n.targets || {} as any;
           const userMatch = Array.isArray(targets.userIds) && targets.userIds.includes(userId);
-          const roleMatch = Array.isArray(targets.roles) && targets.roles.some((r: any) => String(r || '').toLowerCase() === normalizedRole);
+          const roleMatch = Array.isArray(targets.roles) && targets.roles.includes(roleName);
+          const allMatch = Array.isArray(targets.roles) && targets.roles.includes('__all__');
           const noTargets = !targets.userIds && !targets.roles;
-          // Enforce systemAdminOnly visibility
-          const isSystemOnly = Boolean(n.visibility && (n.visibility as any).systemAdminOnly === true);
-          if (isSystemOnly && !isSysAdmin) return false;
-          return userMatch || roleMatch || noTargets;
+          return userMatch || roleMatch || allMatch || noTargets;
         })
         .sort((a, b) => (b.createdAt?.getTime?.() || 0) - (a.createdAt?.getTime?.() || 0))
         .slice(0, limit);
       return items;
     }
-    const normalizedRole = String(roleName || '').trim().toLowerCase();
-    const isSysAdmin = normalizedRole === 'system administrator';
-    const baseFilter: any = { status: { $in: ['pending', 'delivered'] } };
-
-    // Build target filter common to all users
-    const targetsFilter = {
+    const isSysAdmin = roleName.trim().toLowerCase().includes('system administrator');
+    const filter: any = {
+      status: { $in: ['pending', 'delivered'] },
       $or: [
         { 'targets.userIds': userId },
         { 'targets.roles': roleName },
-        { 'targets.broadcast': true }, // Include broadcast notifications
+        { 'targets.roles': '__all__' },
         { targets: { $exists: false } }
       ]
-    } as const;
-
-    // Non-admins cannot see systemAdminOnly items
-    const nonAdminVisibilityFilter = {
-      $or: [
-        { 'visibility.systemAdminOnly': { $ne: true } },
-        { visibility: { $exists: false } }
-      ]
-    } as const;
-
-    // For System Administrators: enforce targeting, but allow systemAdminOnly visibility
-    if (isSysAdmin) {
-      const filter: any = {
-        ...baseFilter,
-        $and: [targetsFilter]
-      };
-      const notifications = await this.notifications.find(filter).sort({ createdAt: -1 }).limit(limit).toArray();
-      // Add readAt field based on readBy array
-      return notifications.map(n => ({
-        ...n,
-        readAt: n.readBy && n.readBy.includes(userId) ? n.deliveredAt || n.createdAt : null
-      }));
-    }
-
-    const filter: any = {
-      ...baseFilter,
-      $and: [targetsFilter, nonAdminVisibilityFilter]
     };
-
+    
+    if (isSysAdmin) {
+      delete filter.$or;
+    }
+    
     return this.notifications.find(filter).sort({ createdAt: -1 }).limit(limit).toArray();
   }
 
@@ -441,76 +397,6 @@ export class NotificationService {
       { $addToSet: { readBy: userId }, $set: { status: 'read' as NotificationStatus } }
     );
     return res.modifiedCount;
-  }
-
-  async deleteNotifications(userId: string, notificationIds: string[], userRole?: string): Promise<number> {
-    try {
-      // Convert string IDs to ObjectIds for MongoDB
-      const ObjectId = mongodb.ObjectId;
-      console.log(`🔍 Converting notification IDs to ObjectIds:`, notificationIds);
-      
-      const objectIds = notificationIds.map(id => {
-        try {
-          // Check if it's a valid ObjectId format (24 hex characters)
-          if (!/^[0-9a-fA-F]{24}$/.test(id)) {
-            console.log(`⚠️ ID "${id}" is not 24 chars, trying to use as string ID...`);
-            // If it's not a valid ObjectId format, we might be using string IDs
-            // Let's try to find by string ID instead
-            return id;
-          }
-          return new ObjectId(id);
-        } catch (e) {
-          console.error(`❌ Invalid ObjectId: ${id}`, e);
-          // Fallback to using the string ID directly
-          return id;
-        }
-      });
-      
-      // Build security filter - user can only delete notifications targeted to them
-      // Handle both ObjectId and string ID formats
-      const securityFilter: any = {
-        $and: [
-          {
-            $or: [
-              { _id: { $in: objectIds.filter(id => typeof id === 'object') } }, // ObjectIds
-              { _id: { $in: objectIds.filter(id => typeof id === 'string') } }   // String IDs
-            ]
-          },
-          {
-            $or: [
-              { 'targets.userIds': userId }, // Direct user targeting
-              { 'targets.broadcast': true }, // Allow deleting broadcast notifications
-            ]
-          }
-        ]
-      };
-      
-      // If user has a role, allow deleting role-based notifications
-      if (userRole) {
-        securityFilter.$and[1].$or.push({ 'targets.roles': userRole });
-      }
-      
-      console.log(`🔍 Delete filter for user ${userId} (${userRole}):`, JSON.stringify(securityFilter, null, 2));
-      
-      const res = await this.notifications.deleteMany(securityFilter);
-      console.log(`🗑️ Deleted ${res.deletedCount}/${notificationIds.length} notifications for user ${userId}`);
-      return res.deletedCount;
-    } catch (error) {
-      console.error(`❌ Error in deleteNotifications:`, error);
-      throw error;
-    }
-  }
-
-  async deleteAllNotifications(userRole: string): Promise<number> {
-    // Only System Administrators can delete all notifications
-    if (userRole !== 'System Administrator') {
-      throw new Error('Only System Administrators can delete all notifications');
-    }
-    
-    console.log(`🗑️ System Administrator deleting ALL notifications...`);
-    const res = await this.notifications.deleteMany({});
-    console.log(`🗑️ Deleted ALL ${res.deletedCount} notifications from database`);
-    return res.deletedCount;
   }
 
   async upsertRule(rule: Omit<NotificationRuleDoc, '_id' | 'createdAt'>) {
@@ -681,7 +567,7 @@ export class NotificationService {
     type: string;
     title: string;
     message: string;
-    targets: { userIds?: string[]; roles?: RoleName[]; broadcast?: boolean };
+    targets: { userIds?: string[]; roles?: RoleName[] };
     metadata?: any;
   }): Promise<{ id: any } | null> {
     try {
