@@ -46,17 +46,15 @@ export class EscalationService {
       const rule = await this.getEscalationRule(order);
       if (!rule) continue;
 
-      // Determine next level already applied
+      // Auto-escalation policy: only ever create Level 1 automatically on breach
       const applied = await this.db.query(
-        `SELECT COALESCE(MAX(level), 0) AS max_level
-         FROM automated_escalations
-         WHERE order_id = $1 AND (rule_id = $2 OR $2 IS NULL)`,
-        [order.id, null]
+        `SELECT 1 FROM automated_escalations WHERE order_id = $1 AND level = 1 LIMIT 1`,
+        [order.id]
       );
-      const nextLevel = Number(applied.rows[0]?.max_level || 0) + 1;
-      if (rule.maxLevels && nextLevel > rule.maxLevels) continue;
-
-      await this.escalateOrder(order, rule, nextLevel);
+      const alreadyLevel1 = applied.rowCount && applied.rowCount > 0;
+      if (!alreadyLevel1) {
+        await this.escalateOrder(order, rule, 1);
+      }
     }
   }
 
@@ -207,6 +205,7 @@ export class EscalationService {
   }
 
   async resolveEscalation(escalationId: string, resolvedBy: string): Promise<void> {
+    // 1) Mark escalation resolved
     await this.db.query(
       `UPDATE escalations 
        SET status = 'resolved', 
@@ -215,6 +214,38 @@ export class EscalationService {
        WHERE id = $1`,
       [escalationId, resolvedBy]
     );
+
+    try {
+      // 2) Load escalation + order context
+      const escRes = await this.db.query(
+        `SELECT e.order_id, e.escalation_level, e.escalated_to, o.order_number, o.current_state, o.order_type
+         FROM escalations e
+         LEFT JOIN orders o ON o.id = e.order_id
+         WHERE e.id = $1
+         LIMIT 1`,
+        [escalationId]
+      );
+      const ctx = escRes.rows[0];
+
+      // 3) Notify assigned user and role that escalation resolved
+      try {
+        await this.notificationService.createInAppNotification?.({
+          type: 'escalation_resolved',
+          title: `Escalation resolved` ,
+          message: `${ctx?.order_number || ctx?.order_id} · L${ctx?.escalation_level} resolved` ,
+          targets: { userIds: [String(ctx?.escalated_to || resolvedBy)] },
+          metadata: { orderId: ctx?.order_id, level: ctx?.escalation_level, resolvedBy }
+        } as any);
+      } catch {}
+
+      // 4) Attempt to resume the order workflow from where it paused
+      try {
+        if (ctx?.order_id && ctx?.order_type && ctx?.current_state) {
+          const { advanceOrderWorkflow } = await import('./order-workflow.service.ts');
+          await advanceOrderWorkflow(this.db as any, this.mongoClient as any, String(ctx.order_id), String(ctx.current_state), true);
+        }
+      } catch {}
+    } catch {}
   }
 
   async monitorSLA(): Promise<void> {
@@ -236,30 +267,21 @@ export class EscalationService {
           } as any);
         } catch {}
       }
-      // Breach → escalate level
+      // Breach → create Level 1 only (no automatic higher levels)
       if (age >= slaHours) {
         const rule = await this.getEscalationRule(order);
         if (rule) {
           const applied = await this.db.query(
-            `SELECT COALESCE(MAX(level), 0) AS max_level FROM automated_escalations WHERE order_id = $1`,
+            `SELECT 1 FROM automated_escalations WHERE order_id = $1 AND level = 1 LIMIT 1`,
             [order.id]
           );
-          const nextLevel = Number(applied.rows[0]?.max_level || 0) + 1;
-          await this.escalateOrder(order, rule, nextLevel);
+          const alreadyLevel1 = applied.rowCount && applied.rowCount > 0;
+          if (!alreadyLevel1) {
+            await this.escalateOrder(order, rule, 1);
+          }
         }
       }
-      // Re-escalate
-      if (age >= reescalatePct * slaHours) {
-        const applied = await this.db.query(
-          `SELECT COALESCE(MAX(level), 0) AS max_level FROM automated_escalations WHERE order_id = $1`,
-          [order.id]
-        );
-        const nextLevel = Number(applied.rows[0]?.max_level || 0) + 1;
-        const rule = await this.getEscalationRule(order);
-        if (rule && (!rule.maxLevels || nextLevel <= rule.maxLevels)) {
-          await this.escalateOrder(order, rule, nextLevel);
-        }
-      }
+      // Re-escalation disabled for automation; manual only via endpoint
     }
   }
 

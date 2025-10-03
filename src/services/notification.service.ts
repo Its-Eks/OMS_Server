@@ -395,17 +395,7 @@ export class NotificationService {
     const isSysAdmin = normalizedRole === 'system administrator';
     const baseFilter: any = { status: { $in: ['pending', 'delivered'] } };
 
-    // Build target filter common to all users
-    const targetsFilter = {
-      $or: [
-        { 'targets.userIds': userId },
-        { 'targets.roles': roleName },
-        { 'targets.broadcast': true }, // Include broadcast notifications
-        { targets: { $exists: false } }
-      ]
-    } as const;
-
-    // Non-admins cannot see systemAdminOnly items
+    // Visibility filter for non-admins (hide systemAdminOnly)
     const nonAdminVisibilityFilter = {
       $or: [
         { 'visibility.systemAdminOnly': { $ne: true } },
@@ -413,26 +403,49 @@ export class NotificationService {
       ]
     } as const;
 
-    // For System Administrators: enforce targeting, but allow systemAdminOnly visibility
     if (isSysAdmin) {
+      // System Administrators ONLY see:
+      // - notifications explicitly targeted to their userId
+      // - notifications targeted to the 'System Administrator' role
+      // - notifications marked systemAdminOnly
       const filter: any = {
         ...baseFilter,
-        $and: [targetsFilter]
+        $or: [
+          { 'targets.userIds': userId },
+          { 'targets.roles': 'System Administrator' },
+          { 'visibility.systemAdminOnly': true }
+        ]
       };
-      const notifications = await this.notifications.find(filter).sort({ createdAt: -1 }).limit(limit).toArray();
-      // Add readAt field based on readBy array
+      const notifications = await this.notifications
+        .find(filter)
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .toArray();
       return notifications.map(n => ({
         ...n,
         readAt: n.readBy && n.readBy.includes(userId) ? n.deliveredAt || n.createdAt : null
       }));
     }
 
+    // Non-admin users ONLY see notifications explicitly targeted to them by userId or by their role
     const filter: any = {
       ...baseFilter,
-      $and: [targetsFilter, nonAdminVisibilityFilter]
+      $and: [
+        {
+          $or: [
+            { 'targets.userIds': userId },
+            { 'targets.roles': roleName }
+          ]
+        },
+        nonAdminVisibilityFilter
+      ]
     };
 
-    return this.notifications.find(filter).sort({ createdAt: -1 }).limit(limit).toArray();
+    return this.notifications
+      .find(filter)
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .toArray();
   }
 
   async markRead(userId: string, notificationIds: string[]): Promise<number> {
