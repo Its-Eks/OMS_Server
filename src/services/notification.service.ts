@@ -1,4 +1,5 @@
 import nodemailer from 'nodemailer';
+import axios from 'axios';
 import { mongoClient, mongodb } from '../Database/main.ts';
 import type { MongoClient, Db, Collection } from 'mongodb';
 import dotenv from 'dotenv';
@@ -75,6 +76,7 @@ export class NotificationService {
 
   private transporter: any | null = null;
   private isTransporterReady: boolean = false;
+  private useResend: boolean = false;
 
   // Singleton transport across instances to prevent repeated SMTP setup/verify
   private static sharedTransporter: any | null = null;
@@ -135,12 +137,21 @@ export class NotificationService {
     this.rules = this.db.collection<NotificationRuleDoc>('notification_rules');
     this.events = this.db.collection<UserEventDoc>('user_events');
 
-    // Initialize or reuse a shared SMTP transporter
-    if (NotificationService.sharedTransporter) {
-      this.transporter = NotificationService.sharedTransporter;
-      this.isTransporterReady = NotificationService.sharedReady;
+    // Prefer Resend API if configured
+    this.useResend = !!process.env.RESEND_API_KEY;
+    if (this.useResend) {
+      console.log('[notification] ✅ Resend API enabled');
+      // No SMTP transporter needed when using Resend
+      this.transporter = null;
+      this.isTransporterReady = true;
     } else {
-      this.initializeTransporter();
+      // Initialize or reuse a shared SMTP transporter
+      if (NotificationService.sharedTransporter) {
+        this.transporter = NotificationService.sharedTransporter;
+        this.isTransporterReady = NotificationService.sharedReady;
+      } else {
+        this.initializeTransporter();
+      }
     }
   }
 
@@ -502,6 +513,33 @@ export class NotificationService {
   }
 
   async send(options: SendEmailOptions): Promise<boolean> {
+    // Prefer Resend API when configured
+    if (this.useResend) {
+      try {
+        const fromHeader = options.from || process.env.RESEND_FROM || process.env.SMTP_FROM || 'no-reply@oms.local';
+        const apiKey = process.env.RESEND_API_KEY as string;
+        const payload: any = {
+          from: fromHeader,
+          to: Array.isArray(options.to) ? options.to : [options.to],
+          subject: options.subject,
+          html: options.html,
+          text: options.text
+        };
+        await axios.post('https://api.resend.com/emails', payload, {
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        });
+        console.log('[notification] ✅ Email sent via Resend:', { to: options.to, subject: options.subject });
+        return true;
+      } catch (err: any) {
+        console.error('[notification] ❌ Resend email failed:', err?.response?.data || err?.message || err);
+        // fall through to SMTP if available
+      }
+    }
+
     if (!this.transporter) {
       console.log('[notification] send (noop - no transporter):', options.subject, '->', options.to);
       return false;
@@ -611,6 +649,9 @@ export class NotificationService {
 
   // Public method to test connection
   async testConnection(): Promise<{ ok: boolean; message?: string; details?: any }> {
+    if (this.useResend) {
+      return { ok: true, message: 'Resend enabled', details: { provider: 'resend' } };
+    }
     if (!this.transporter) {
       return { 
         ok: false, 
