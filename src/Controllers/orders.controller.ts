@@ -5,6 +5,7 @@ import { CacheService, buildCacheKey } from '../services/cache.service.ts';
 import { OrdersService } from '../services/orders.service.ts';
 import { FNOCommunicationService } from '../services/fno-communication.service.ts';
 import { PolicyService } from '../services/policy.service.ts';
+import { PaymentIntegrationService } from '../services/payment-integration.service.ts';
 
 function makeOrdersService(req: Request): OrdersService {
   const db: Pool = req.app.get('pgPool');
@@ -133,6 +134,28 @@ export async function createOrder(req: Request, res: Response) {
     const cache = new CacheService(redis);
     await cache.delByPrefix(buildCacheKey(['orders:list']));
     await cache.delByPrefix(buildCacheKey(['dashboard:data']));
+
+    // 🚀 Auto-generate payment link for the order
+    try {
+      const db: Pool = req.app.get('pgPool');
+      const paymentService = new PaymentIntegrationService(db);
+      
+      // Create payment link asynchronously (don't block response)
+      setImmediate(async () => {
+        try {
+          const paymentLink = await paymentService.createPaymentForOrder(order.id);
+          if (paymentLink) {
+            console.log(`[OrderController] Payment link created for order ${order.id}: ${paymentLink.url}`);
+          } else {
+            console.warn(`[OrderController] Failed to create payment link for order ${order.id}`);
+          }
+        } catch (error) {
+          console.error(`[OrderController] Error creating payment link for order ${order.id}:`, error);
+        }
+      });
+    } catch (error) {
+      console.error(`[OrderController] Error setting up payment integration for order ${order.id}:`, error);
+    }
 
     res.status(201).json({ success: true, orderId: order.id, order: normalized });
   } catch (error: any) {
