@@ -181,4 +181,36 @@ router.put('/:id', authorize(['orders:update']), normalizeBodyToSnakeCase, updat
 router.get('/:id/workflow/state', authorize(['orders:read']), getOrderWorkflowState);
 router.get('/:id/history', authorize(['orders:read']), getOrderHistory);
 
+// Service-to-service: mark order as paid (Stripe callback)
+router.post('/:id/payment/success', async (req: Request, res: Response) => {
+  try {
+    const serviceApiKey = (req.headers['x-service-key'] || req.headers['x-service-api-key']) as string;
+    const expectedApiKey = process.env.ONBOARDING_SERVICE_API_KEY;
+    if (!expectedApiKey || serviceApiKey !== expectedApiKey) {
+      return res.status(401).json({ success: false, error: 'Unauthorized: Invalid service credentials' });
+    }
+
+    const orderId = req.params.id;
+    const db: Pool = req.app.get('pgPool');
+
+    const result = await db.query(
+      `UPDATE orders 
+         SET status = 'payment_received', updated_at = NOW()
+       WHERE id = $1 AND status <> 'payment_received'
+       RETURNING id`,
+      [orderId]
+    );
+
+    if (result.rowCount === 0) {
+      return res.json({ success: true, message: 'Already marked as paid or order not found' });
+    }
+
+    console.log(`[OrdersRoute] Order ${orderId} marked as payment_received`);
+    return res.json({ success: true, orderId });
+  } catch (err: any) {
+    console.error('[OrdersRoute] payment/success failed:', err?.message || err);
+    return res.status(500).json({ success: false, error: 'Failed to update order payment status' });
+  }
+});
+
 export default router;
