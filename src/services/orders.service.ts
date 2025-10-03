@@ -4,7 +4,6 @@ import { ConfigurableWorkflowService } from './configurable-workflow.service.ts'
 import { WorkflowABTestingService } from './workflow-ab-testing.service.ts';
 import { FNOCommunicationService } from './fno-communication.service.ts';
 import { PolicyService } from './policy.service.ts';
-import { NotificationService } from './notification.service.ts';
 import type { Order, OrderStatus } from '../models/order.model.ts';
 
 export class OrdersService {
@@ -14,7 +13,6 @@ export class OrdersService {
   private abTestingService: WorkflowABTestingService;
   private fnoCommunication: FNOCommunicationService;
   private policyService: PolicyService;
-  public notificationService?: NotificationService;
 
   constructor(db: Pool, fnoCommunication: FNOCommunicationService, policyService: PolicyService) {
     this.db = db;
@@ -292,9 +290,6 @@ export class OrdersService {
 
     // Handle status-specific actions with updated order
     await this.handleStatusTransition(after);
-    
-    // Send order status change notifications
-    await this.sendOrderStatusNotification(order, after, changedBy);
     // If order reached validated, ensure onboarding exists (customer + order anchored)
     if ((after as any).status === 'validated') {
       await this.ensureOnboardingForOrder(after.id, (after as any).customerId, changedBy || 'system');
@@ -815,92 +810,5 @@ export class OrdersService {
   // Create A/B test
   async createABTest(test: any, createdBy: string): Promise<any> {
     return await this.abTestingService.createABTest(test, createdBy);
-  }
-
-  // Send order status change notifications
-  private async sendOrderStatusNotification(beforeOrder: Order, afterOrder: Order, changedBy?: string): Promise<void> {
-    try {
-      // Skip if status didn't actually change
-      if (beforeOrder.status === afterOrder.status) return;
-
-      // Get customer details
-      const customerResult = await this.db.query(
-        'SELECT first_name, last_name, email FROM customers WHERE id = $1',
-        [(afterOrder as any).customerId || (afterOrder as any).customer_id]
-      );
-      const customer = customerResult.rows[0];
-      const customerName = customer ? `${customer.first_name} ${customer.last_name}`.trim() : 'Unknown Customer';
-
-      // Get order owner details if assigned
-      let orderOwner = null;
-      const assignedTo = (afterOrder as any).assignedTo || (afterOrder as any).assigned_to;
-      if (assignedTo) {
-        const ownerResult = await this.db.query(
-          'SELECT first_name, last_name, email FROM users WHERE id = $1',
-          [assignedTo]
-        );
-        orderOwner = ownerResult.rows[0];
-      }
-
-      // Use injected notification service
-      if (!this.notificationService) {
-        console.warn('[orders] No notification service available for order status notifications');
-        return;
-      }
-
-      // Notify Operations Managers about status changes
-      await this.notificationService.createInAppNotification({
-        type: 'order_status_change',
-        title: `Order Status Updated: ${(afterOrder as any).orderNumber || afterOrder.id}`,
-        message: `${customerName}'s order changed from "${beforeOrder.status}" to "${afterOrder.status}"`,
-        targets: { roles: ['Operations Manager'] },
-        metadata: {
-          orderId: afterOrder.id,
-          orderNumber: (afterOrder as any).orderNumber,
-          fromStatus: beforeOrder.status,
-          toStatus: afterOrder.status,
-          customerName,
-          changedBy,
-          url: `/orders/${afterOrder.id}`
-        }
-      });
-
-      // If order is assigned to someone, notify them directly
-      if (orderOwner) {
-        await this.notificationService.createInAppNotification({
-          type: 'order_assigned_to_me',
-          title: `Your Order Updated: ${(afterOrder as any).orderNumber || afterOrder.id}`,
-          message: `Order for ${customerName} changed to "${afterOrder.status}"`,
-          targets: { userIds: [assignedTo] },
-          metadata: {
-            orderId: afterOrder.id,
-            orderNumber: (afterOrder as any).orderNumber,
-            fromStatus: beforeOrder.status,
-            toStatus: afterOrder.status,
-            customerName,
-            url: `/orders/${afterOrder.id}`
-          }
-        });
-      }
-
-      // Special notifications for important status changes
-      if (afterOrder.status === 'completed') {
-        await this.notificationService.createInAppNotification({
-          type: 'order_completed',
-          title: `Order Completed: ${(afterOrder as any).orderNumber || afterOrder.id}`,
-          message: `${customerName}'s order has been successfully completed`,
-          targets: { roles: ['Operations Manager'] },
-          metadata: {
-            orderId: afterOrder.id,
-            orderNumber: (afterOrder as any).orderNumber,
-            customerName,
-            url: `/orders/${afterOrder.id}`
-          }
-        });
-      }
-
-    } catch (error) {
-      console.warn('[orders] Failed to send order status notification:', error);
-    }
   }
 }

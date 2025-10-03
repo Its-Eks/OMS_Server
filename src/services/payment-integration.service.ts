@@ -82,21 +82,55 @@ export class PaymentIntegrationService {
       console.log(`[PaymentIntegration] Calling onboarding service: ${this.onboardingServiceUrl}/api/payments/create`);
       console.log(`[PaymentIntegration] Using API key: ${this.serviceApiKey.substring(0, 10)}...`);
       
-      const response = await axios.post(
-        `${this.onboardingServiceUrl}/api/payments/create`,
-        paymentRequest,
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            'x-service-key': this.serviceApiKey
-          },
-          timeout: 10000
+      // Retry logic for transient errors (e.g., 429/503)
+      const maxRetries = 4;
+      const baseDelayMs = 1000;
+      let attempt = 0;
+      let response;
+      while (true) {
+        try {
+          response = await axios.post(
+            `${this.onboardingServiceUrl}/api/payments/create`,
+            paymentRequest,
+            {
+              headers: {
+                'Content-Type': 'application/json',
+                'x-service-key': this.serviceApiKey
+              },
+              timeout: 15000
+            }
+          );
+          break;
+        } catch (err: any) {
+          const status = err?.response?.status;
+          const isTransient = status === 429 || status === 502 || status === 503 || status === 504 || err?.code === 'ECONNRESET' || err?.code === 'ENOTFOUND' || err?.code === 'ETIMEDOUT';
+          if (attempt < maxRetries && isTransient) {
+            const delay = baseDelayMs * Math.pow(2, attempt) + Math.floor(Math.random() * 250);
+            console.warn(`[PaymentIntegration] Attempt ${attempt + 1} failed (status: ${status || err?.code}). Retrying in ${delay}ms...`);
+            await new Promise((res) => setTimeout(res, delay));
+            attempt++;
+            continue;
+          }
+          throw err;
         }
-      );
+      }
 
       if (response.data.success) {
-        console.log(`[PaymentIntegration] Payment link created for order ${orderId}: ${response.data.paymentLink.url}`);
-        return response.data.paymentLink;
+        const paymentUrl = response.data?.data?.paymentUrl;
+        const paymentLinkId = response.data?.data?.paymentLinkId;
+        const expiresAt = response.data?.data?.expiresAt;
+        if (!paymentUrl) {
+          throw new Error('paymentUrl missing in onboarding response');
+        }
+        console.log(`[PaymentIntegration] Payment link created for order ${orderId}: ${paymentUrl}`);
+        return {
+          id: paymentLinkId,
+          url: paymentUrl,
+          amount: 0,
+          currency: 'ZAR',
+          status: 'pending',
+          expiresAt: expiresAt || ''
+        } as PaymentLink;
       } else {
         console.error(`[PaymentIntegration] Failed to create payment link for order ${orderId}:`, response.data.error);
         return null;
@@ -175,10 +209,14 @@ export class PaymentIntegrationService {
       }
     };
 
-    const type = serviceType?.toLowerCase() || 'internet';
-    const speed = bandwidth || '100/20';
-    
-    return pricing[type]?.[speed] || pricing['internet']['100/20'];
+    const typeKey = (serviceType || 'internet').toLowerCase();
+    const speedKey = bandwidth || '100/20';
+    const pricingForType = pricing[typeKey] ?? pricing['internet'];
+    const candidate = pricingForType[speedKey];
+    if (typeof candidate === 'number') {
+      return candidate;
+    }
+    return pricing['internet']['100/20'];
   }
 
   /**
@@ -194,8 +232,12 @@ export class PaymentIntegrationService {
       'premium': 1499
     };
 
-    const type = installationType?.toLowerCase() || 'professional_install';
-    return fees[type] || fees['professional_install'];
+    const typeKey = (installationType || 'professional_install').toLowerCase();
+    const candidate = fees[typeKey];
+    if (typeof candidate === 'number') {
+      return candidate;
+    }
+    return fees['professional_install'];
   }
 
   /**
@@ -205,10 +247,12 @@ export class PaymentIntegrationService {
     try {
       console.log(`[PaymentIntegration] Handling payment completion for order: ${orderId}`);
 
-      // Update order status to indicate payment received
+      // Idempotent update: mark as paid if not already
       await this.db.query(
-        'UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2',
-        ['payment_received', orderId]
+        `UPDATE orders 
+           SET status = 'payment_received', updated_at = NOW()
+         WHERE id = $1 AND status <> 'payment_received'`,
+        [orderId as unknown as string]
       );
 
       console.log(`[PaymentIntegration] Order ${orderId} marked as payment received`);

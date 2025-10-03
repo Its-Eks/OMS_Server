@@ -1,4 +1,5 @@
 import nodemailer from 'nodemailer';
+import axios from 'axios';
 import { mongoClient, mongodb } from '../Database/main.ts';
 import type { MongoClient, Db, Collection } from 'mongodb';
 import dotenv from 'dotenv';
@@ -75,6 +76,7 @@ export class NotificationService {
 
   private transporter: any | null = null;
   private isTransporterReady: boolean = false;
+  private useResend: boolean = false;
 
   // Singleton transport across instances to prevent repeated SMTP setup/verify
   private static sharedTransporter: any | null = null;
@@ -135,12 +137,21 @@ export class NotificationService {
     this.rules = this.db.collection<NotificationRuleDoc>('notification_rules');
     this.events = this.db.collection<UserEventDoc>('user_events');
 
-    // Initialize or reuse a shared SMTP transporter
-    if (NotificationService.sharedTransporter) {
-      this.transporter = NotificationService.sharedTransporter;
-      this.isTransporterReady = NotificationService.sharedReady;
+    // Prefer Resend API if configured
+    this.useResend = !!process.env.RESEND_API_KEY;
+    if (this.useResend) {
+      console.log('[notification] ✅ Resend API enabled');
+      // No SMTP transporter needed when using Resend
+      this.transporter = null;
+      this.isTransporterReady = true;
     } else {
-      this.initializeTransporter();
+      // Initialize or reuse a shared SMTP transporter
+      if (NotificationService.sharedTransporter) {
+        this.transporter = NotificationService.sharedTransporter;
+        this.isTransporterReady = NotificationService.sharedReady;
+      } else {
+        this.initializeTransporter();
+      }
     }
   }
 
@@ -343,26 +354,12 @@ export class NotificationService {
 
   async ensureDefaultRules(): Promise<void> {
     const defaults: NotificationRuleDoc[] = [
-      // System admin only - user management events
       { eventType: 'user_first_login', routeTo: { roles: ['System Administrator'] }, systemAdminOnly: true, dedupeWindowMinutes: 1440, createdAt: new Date() },
       { eventType: 'password_link_expired', routeTo: { roles: ['System Administrator'] }, systemAdminOnly: true, dedupeWindowMinutes: 60, createdAt: new Date() },
-      { eventType: 'email_verification_needed', routeTo: { roles: ['System Administrator'] }, systemAdminOnly: true, dedupeWindowMinutes: 60, createdAt: new Date() },
-      
-      // Operations Manager - operational events
-      { eventType: 'escalation_created', routeTo: { roles: ['Operations Manager'] }, systemAdminOnly: false, dedupeWindowMinutes: 0, createdAt: new Date() },
-      { eventType: 'escalation_assigned', routeTo: { roles: ['Operations Manager'] }, systemAdminOnly: false, dedupeWindowMinutes: 0, createdAt: new Date() },
-      { eventType: 'escalation_resolved', routeTo: { roles: ['Operations Manager'] }, systemAdminOnly: false, dedupeWindowMinutes: 0, createdAt: new Date() },
-      { eventType: 'order_status_change', routeTo: { roles: ['Operations Manager'] }, systemAdminOnly: false, dedupeWindowMinutes: 5, createdAt: new Date() },
-      
-      // FNO events
       { eventType: 'fno_submit_api', routeTo: { roles: ['Operations Manager'] }, systemAdminOnly: false, dedupeWindowMinutes: 0, createdAt: new Date() },
       { eventType: 'fno_submit_manual', routeTo: { roles: ['Application Administrator'] }, systemAdminOnly: false, dedupeWindowMinutes: 0, createdAt: new Date() },
       { eventType: 'fno_manual_completed', routeTo: { roles: ['Operations Manager', 'Application Administrator'] }, systemAdminOnly: false, dedupeWindowMinutes: 0, createdAt: new Date() },
-      
-      // Individual user notifications (targeted by userId, not role)
-      { eventType: 'escalation_assigned_to_me', routeTo: { userIds: [] }, systemAdminOnly: false, dedupeWindowMinutes: 0, createdAt: new Date() },
-      { eventType: 'order_assigned_to_me', routeTo: { userIds: [] }, systemAdminOnly: false, dedupeWindowMinutes: 0, createdAt: new Date() },
-      { eventType: 'task_assigned_to_me', routeTo: { userIds: [] }, systemAdminOnly: false, dedupeWindowMinutes: 0, createdAt: new Date() }
+      { eventType: 'email_verification_needed', routeTo: { roles: ['System Administrator'] }, systemAdminOnly: true, dedupeWindowMinutes: 60, createdAt: new Date() }
     ];
     
     for (const rule of defaults) {
@@ -373,19 +370,15 @@ export class NotificationService {
   async getMyNotifications(userId: string, roleName: RoleName, limit = 50) {
     // Dev memory fallback
     if (this.devNoMongo) {
-      const normalizedRole = String(roleName || '').trim().toLowerCase();
-      const isSysAdmin = normalizedRole === 'system administrator';
       const items = NotificationService.memoryStore
         .filter(n => n.status === 'pending' || n.status === 'delivered')
         .filter(n => {
           const targets = n.targets || {} as any;
           const userMatch = Array.isArray(targets.userIds) && targets.userIds.includes(userId);
-          const roleMatch = Array.isArray(targets.roles) && targets.roles.some((r: any) => String(r || '').toLowerCase() === normalizedRole);
+          const roleMatch = Array.isArray(targets.roles) && targets.roles.includes(roleName);
+          const allMatch = Array.isArray(targets.roles) && targets.roles.includes('__all__');
           const noTargets = !targets.userIds && !targets.roles;
-          // Enforce systemAdminOnly visibility
-          const isSystemOnly = Boolean(n.visibility && (n.visibility as any).systemAdminOnly === true);
-          if (isSystemOnly && !isSysAdmin) return false;
-          return userMatch || roleMatch || noTargets;
+          return userMatch || roleMatch || allMatch || noTargets;
         })
         .sort((a, b) => (b.createdAt?.getTime?.() || 0) - (a.createdAt?.getTime?.() || 0))
         .slice(0, limit);
@@ -454,76 +447,6 @@ export class NotificationService {
       { $addToSet: { readBy: userId }, $set: { status: 'read' as NotificationStatus } }
     );
     return res.modifiedCount;
-  }
-
-  async deleteNotifications(userId: string, notificationIds: string[], userRole?: string): Promise<number> {
-    try {
-      // Convert string IDs to ObjectIds for MongoDB
-      const ObjectId = mongodb.ObjectId;
-      console.log(`🔍 Converting notification IDs to ObjectIds:`, notificationIds);
-      
-      const objectIds = notificationIds.map(id => {
-        try {
-          // Check if it's a valid ObjectId format (24 hex characters)
-          if (!/^[0-9a-fA-F]{24}$/.test(id)) {
-            console.log(`⚠️ ID "${id}" is not 24 chars, trying to use as string ID...`);
-            // If it's not a valid ObjectId format, we might be using string IDs
-            // Let's try to find by string ID instead
-            return id;
-          }
-          return new ObjectId(id);
-        } catch (e) {
-          console.error(`❌ Invalid ObjectId: ${id}`, e);
-          // Fallback to using the string ID directly
-          return id;
-        }
-      });
-      
-      // Build security filter - user can only delete notifications targeted to them
-      // Handle both ObjectId and string ID formats
-      const securityFilter: any = {
-        $and: [
-          {
-            $or: [
-              { _id: { $in: objectIds.filter(id => typeof id === 'object') } }, // ObjectIds
-              { _id: { $in: objectIds.filter(id => typeof id === 'string') } }   // String IDs
-            ]
-          },
-          {
-            $or: [
-              { 'targets.userIds': userId }, // Direct user targeting
-              { 'targets.broadcast': true }, // Allow deleting broadcast notifications
-            ]
-          }
-        ]
-      };
-      
-      // If user has a role, allow deleting role-based notifications
-      if (userRole) {
-        securityFilter.$and[1].$or.push({ 'targets.roles': userRole });
-      }
-      
-      console.log(`🔍 Delete filter for user ${userId} (${userRole}):`, JSON.stringify(securityFilter, null, 2));
-      
-      const res = await this.notifications.deleteMany(securityFilter);
-      console.log(`🗑️ Deleted ${res.deletedCount}/${notificationIds.length} notifications for user ${userId}`);
-      return res.deletedCount;
-    } catch (error) {
-      console.error(`❌ Error in deleteNotifications:`, error);
-      throw error;
-    }
-  }
-
-  async deleteAllNotifications(userRole: string): Promise<number> {
-    // Only System Administrators can delete all notifications
-    if (userRole !== 'System Administrator') {
-      throw new Error('Only System Administrators can delete all notifications');
-    }
-    
-    console.log(`🗑️ System Administrator deleting ALL notifications...`);
-    const res = await this.notifications.deleteMany({});
-    console.log(`🗑️ Deleted ALL ${res.deletedCount} notifications from database`);
-    return res.deletedCount;
   }
 
   async upsertRule(rule: Omit<NotificationRuleDoc, '_id' | 'createdAt'>) {
@@ -629,6 +552,33 @@ export class NotificationService {
   }
 
   async send(options: SendEmailOptions): Promise<boolean> {
+    // Prefer Resend API when configured
+    if (this.useResend) {
+      try {
+        const fromHeader = options.from || process.env.RESEND_FROM || process.env.SMTP_FROM || 'no-reply@oms.local';
+        const apiKey = process.env.RESEND_API_KEY as string;
+        const payload: any = {
+          from: fromHeader,
+          to: Array.isArray(options.to) ? options.to : [options.to],
+          subject: options.subject,
+          html: options.html,
+          text: options.text
+        };
+        await axios.post('https://api.resend.com/emails', payload, {
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        });
+        console.log('[notification] ✅ Email sent via Resend:', { to: options.to, subject: options.subject });
+        return true;
+      } catch (err: any) {
+        console.error('[notification] ❌ Resend email failed:', err?.response?.data || err?.message || err);
+        // fall through to SMTP if available
+      }
+    }
+
     if (!this.transporter) {
       console.log('[notification] send (noop - no transporter):', options.subject, '->', options.to);
       return false;
@@ -694,7 +644,7 @@ export class NotificationService {
     type: string;
     title: string;
     message: string;
-    targets: { userIds?: string[]; roles?: RoleName[]; broadcast?: boolean };
+    targets: { userIds?: string[]; roles?: RoleName[] };
     metadata?: any;
   }): Promise<{ id: any } | null> {
     try {
@@ -738,6 +688,9 @@ export class NotificationService {
 
   // Public method to test connection
   async testConnection(): Promise<{ ok: boolean; message?: string; details?: any }> {
+    if (this.useResend) {
+      return { ok: true, message: 'Resend enabled', details: { provider: 'resend' } };
+    }
     if (!this.transporter) {
       return { 
         ok: false, 

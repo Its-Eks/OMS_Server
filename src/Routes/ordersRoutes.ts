@@ -28,11 +28,6 @@ async function transitionOrder(req: Request, res: Response) {
       console.warn('[orders] Mongo client not initialized; using no-op stub for status transition');
     }
     const svc = new OrdersService(db, new FNOCommunicationService(mongo), new PolicyService(mongo));
-    // Pass notification service to orders service
-    const notificationService = req.app.get('notificationService');
-    if (notificationService) {
-      (svc as any).notificationService = notificationService;
-    }
     const userId: string = ((req as any).user?.userId as string | undefined) || 'system';
     const reason: string | undefined = typeof req.body?.reason === 'string' ? req.body.reason : undefined;
     const nextStatus: string = typeof req.body?.status === 'string' ? req.body.status : '';
@@ -185,5 +180,37 @@ router.get('/:id', authorize(['orders:read']), getOrderById);
 router.put('/:id', authorize(['orders:update']), normalizeBodyToSnakeCase, updateOrder);
 router.get('/:id/workflow/state', authorize(['orders:read']), getOrderWorkflowState);
 router.get('/:id/history', authorize(['orders:read']), getOrderHistory);
+
+// Service-to-service: mark order as paid (Stripe callback)
+router.post('/:id/payment/success', async (req: Request, res: Response) => {
+  try {
+    const serviceApiKey = (req.headers['x-service-key'] || req.headers['x-service-api-key']) as string;
+    const expectedApiKey = process.env.ONBOARDING_SERVICE_API_KEY;
+    if (!expectedApiKey || serviceApiKey !== expectedApiKey) {
+      return res.status(401).json({ success: false, error: 'Unauthorized: Invalid service credentials' });
+    }
+
+    const orderId = req.params.id;
+    const db: Pool = req.app.get('pgPool');
+
+    const result = await db.query(
+      `UPDATE orders 
+         SET status = 'payment_received', updated_at = NOW()
+       WHERE id = $1 AND status <> 'payment_received'
+       RETURNING id`,
+      [orderId]
+    );
+
+    if (result.rowCount === 0) {
+      return res.json({ success: true, message: 'Already marked as paid or order not found' });
+    }
+
+    console.log(`[OrdersRoute] Order ${orderId} marked as payment_received`);
+    return res.json({ success: true, orderId });
+  } catch (err: any) {
+    console.error('[OrdersRoute] payment/success failed:', err?.message || err);
+    return res.status(500).json({ success: false, error: 'Failed to update order payment status' });
+  }
+});
 
 export default router;
