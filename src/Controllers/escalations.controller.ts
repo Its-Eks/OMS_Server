@@ -779,16 +779,45 @@ export async function assignEscalation(req: Request, res: Response) {
 
     const assignedUser = userCheck.rows[0];
 
-    // Check if user has escalation permissions
-    const hasEscalationPermission = assignedUser.permissions?.includes('escalations:view') || 
-                                   assignedUser.role === 'Operations Manager' ||
-                                   assignedUser.role === 'System Administrator';
+    // Guard: Only allow specific roles to be assigned; never allow System Administrators
+    const allowedAssigneeRoles = ['Operations Manager', 'Reporting Manager'];
 
-    if (!hasEscalationPermission) {
-      return res.status(400).json({ 
-        success: false, 
-        error: { message: 'Assigned user does not have escalation permissions' } 
-      });
+    let finalAssigneeId: string = String(assignedTo);
+    let finalAssigneeName: string = assignedToName;
+    let reassigned = false;
+
+    const isSysAdminAssignee = assignedUser.role === 'System Administrator';
+    const hasEscalationPermission = assignedUser.permissions?.includes('escalations:view') ||
+                                    allowedAssigneeRoles.includes(assignedUser.role);
+
+    if (isSysAdminAssignee || !hasEscalationPermission) {
+      // Auto-select an eligible assignee with lowest current load
+      const fallback = await db.query(
+        `SELECT u.id,
+                (u.first_name || ' ' || u.last_name) AS name,
+                COALESCE(
+                  (SELECT COUNT(*) FROM escalations e
+                   WHERE e.escalated_to = u.id AND e.status IN ('open','in_progress')),
+                  0
+                ) AS load
+         FROM users u
+         LEFT JOIN roles r ON r.id = u.role_id
+         WHERE u.is_active = true AND r.name IN ('Operations Manager','Reporting Manager')
+         ORDER BY load ASC, u.created_at ASC
+         LIMIT 1`);
+
+      const candidate = fallback.rows[0];
+      if (!candidate) {
+        return res.status(400).json({
+          success: false,
+          error: { message: 'No eligible assignee available (requires Operations/Reporting Manager)' }
+        });
+      }
+
+      finalAssigneeId = String(candidate.id);
+      finalAssigneeName = String(candidate.name || 'Assigned User');
+      reassigned = true;
+      console.warn(`[escalations] Reassigned from ineligible assignee (${assignedUser.role}) to eligible ${finalAssigneeName} (${finalAssigneeId})`);
     }
 
     // Check availability (basic check - can be enhanced with workload limits)
@@ -816,7 +845,7 @@ export async function assignEscalation(req: Request, res: Response) {
            status = CASE WHEN status = 'open' THEN 'in_progress' ELSE status END
        WHERE id = $2
        RETURNING id, escalated_to, status`,
-      [assignedTo, escalationId]
+      [finalAssigneeId, escalationId]
     );
 
     if (updateResult.rows.length === 0) {
@@ -828,8 +857,8 @@ export async function assignEscalation(req: Request, res: Response) {
 
     const updatedEscalation = updateResult.rows[0];
     // Resolve assigned_to_name via users table
-    const nameRow = await db.query(`SELECT (first_name || ' ' || last_name) AS name FROM users WHERE id = $1`, [assignedTo]);
-    const resolvedAssignedName = nameRow.rows[0]?.name || assignedToName;
+    const nameRow = await db.query(`SELECT (first_name || ' ' || last_name) AS name FROM users WHERE id = $1`, [finalAssigneeId]);
+    const resolvedAssignedName = nameRow.rows[0]?.name || finalAssigneeName;
 
     // Clear relevant caches
     const cache = new CacheService(redis, 60);
@@ -864,8 +893,8 @@ export async function assignEscalation(req: Request, res: Response) {
           type: 'escalation_assigned',
           title: `Escalation assigned to you`,
           message: `${escalation.order_number || ''} · Level ${escalation.escalation_level}`,
-          targets: { userIds: [String(assignedTo)] },
-          metadata: { escalationId, assignedTo, assignedToName: resolvedAssignedName }
+          targets: { userIds: [String(finalAssigneeId)] },
+          metadata: { escalationId, assignedTo: finalAssigneeId, assignedToName: resolvedAssignedName, reassigned }
         });
 
         // Broadcast to Operations Managers with assignee details
@@ -878,7 +907,8 @@ export async function assignEscalation(req: Request, res: Response) {
         });
 
         // Notify reporting manager of the assignee (if any)
-        const rmId = assignedUser.reporting_manager_id ? String(assignedUser.reporting_manager_id) : null;
+        const rmRow = await db.query('SELECT reporting_manager_id FROM users WHERE id = $1', [finalAssigneeId]);
+        const rmId = rmRow.rows[0]?.reporting_manager_id ? String(rmRow.rows[0].reporting_manager_id) : null;
         if (rmId) {
           await notificationService2.createInAppNotification({
             type: 'escalation_assignment_manager_notice',

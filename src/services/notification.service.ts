@@ -384,22 +384,61 @@ export class NotificationService {
         .slice(0, limit);
       return items;
     }
-    const isSysAdmin = roleName.trim().toLowerCase().includes('system administrator');
-    const filter: any = {
-      status: { $in: ['pending', 'delivered'] },
+    const normalizedRole = String(roleName || '').trim().toLowerCase();
+    const isSysAdmin = normalizedRole === 'system administrator';
+    const baseFilter: any = { status: { $in: ['pending', 'delivered'] } };
+
+    // Visibility filter for non-admins (hide systemAdminOnly)
+    const nonAdminVisibilityFilter = {
       $or: [
-        { 'targets.userIds': userId },
-        { 'targets.roles': roleName },
-        { 'targets.roles': '__all__' },
-        { targets: { $exists: false } }
+        { 'visibility.systemAdminOnly': { $ne: true } },
+        { visibility: { $exists: false } }
+      ]
+    } as const;
+
+    if (isSysAdmin) {
+      // System Administrators ONLY see:
+      // - notifications explicitly targeted to their userId
+      // - notifications targeted to the 'System Administrator' role
+      // - notifications marked systemAdminOnly
+      const filter: any = {
+        ...baseFilter,
+        $or: [
+          { 'targets.userIds': userId },
+          { 'targets.roles': 'System Administrator' },
+          { 'visibility.systemAdminOnly': true }
+        ]
+      };
+      const notifications = await this.notifications
+        .find(filter)
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .toArray();
+      return notifications.map(n => ({
+        ...n,
+        readAt: n.readBy && n.readBy.includes(userId) ? n.deliveredAt || n.createdAt : null
+      }));
+    }
+
+    // Non-admin users ONLY see notifications explicitly targeted to them by userId or by their role
+    const filter: any = {
+      ...baseFilter,
+      $and: [
+        {
+          $or: [
+            { 'targets.userIds': userId },
+            { 'targets.roles': roleName }
+          ]
+        },
+        nonAdminVisibilityFilter
       ]
     };
-    
-    if (isSysAdmin) {
-      delete filter.$or;
-    }
-    
-    return this.notifications.find(filter).sort({ createdAt: -1 }).limit(limit).toArray();
+
+    return this.notifications
+      .find(filter)
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .toArray();
   }
 
   async markRead(userId: string, notificationIds: string[]): Promise<number> {
