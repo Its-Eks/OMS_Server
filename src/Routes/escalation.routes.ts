@@ -21,6 +21,74 @@ router.put('/:id/resolve', authorize(['escalations:resolve']), resolveEscalation
 router.post('/:id/assign', authorize(['escalations:assign','admin:manage_roles']), assignEscalation);
 router.get('/:id/eligible-assignees', authorize(['escalations:view']), getEligibleAssignees);
 
+// Manual escalation creation options: recent open orders + eligible assignees
+router.get('/manual/options', authorize(['escalations:view']), async (req: Request, res: Response) => {
+  const db: Pool = req.app.get('pgPool');
+  const q = String(req.query.q || '').trim();
+  const limit = Math.min(parseInt(String(req.query.limit || '25'), 10) || 25, 100);
+
+  try {
+    // Orders: recent, not resolved/cancelled, optional search by order_number or customer
+    const ordersQuery = `
+      SELECT o.id,
+             o.order_number,
+             o.customer_id,
+             (c.first_name || ' ' || c.last_name) AS customer_name,
+             c.email AS customer_email,
+             o.priority,
+             o.service_type AS order_type,
+             o.current_state,
+             o.created_at
+      FROM orders o
+      LEFT JOIN customers c ON c.id = o.customer_id
+      WHERE (o.current_state NOT IN ('cancelled','completed'))
+        AND ($1 = '' OR o.order_number ILIKE '%' || $1 || '%' OR c.first_name ILIKE '%' || $1 || '%' OR c.last_name ILIKE '%' || $1 || '%')
+      ORDER BY o.created_at DESC
+      LIMIT $2
+    `;
+    const ordersRes = await db.query(ordersQuery, [q, limit]);
+
+    // Assignees: Operations Manager role users with open escalation counts
+    const assigneesQuery = `
+      WITH ops AS (
+        SELECT u.id, u.email, u.first_name, u.last_name, r.name AS role
+        FROM users u
+        JOIN roles r ON r.id = u.role_id
+        WHERE u.is_active = true AND (
+          r.name ILIKE '%operations%manager%'
+          OR r.name ILIKE '%operations manager%'
+        )
+      ),
+      counts AS (
+        SELECT escalated_to AS user_id, COUNT(*) AS open_count
+        FROM escalations
+        WHERE status <> 'resolved' AND escalated_to IS NOT NULL
+        GROUP BY escalated_to
+      )
+      SELECT ops.id,
+             (ops.first_name || ' ' || ops.last_name) AS name,
+             ops.email,
+             ops.role,
+             COALESCE(counts.open_count, 0) AS "openEscalations"
+      FROM ops
+      LEFT JOIN counts ON counts.user_id = ops.id
+      ORDER BY "openEscalations" ASC, name ASC
+      LIMIT $1
+    `;
+    const assigneesRes = await db.query(assigneesQuery, [limit]);
+
+    res.json({
+      success: true,
+      data: {
+        orders: ordersRes.rows,
+        assignees: assigneesRes.rows,
+      }
+    });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: { message: e.message } });
+  }
+});
+
 // Combined escalation + workflow detail
 router.get('/:id/detail', authorize(['escalations:view']), async (req: Request, res: Response) => {
   const db: Pool = req.app.get('pgPool');

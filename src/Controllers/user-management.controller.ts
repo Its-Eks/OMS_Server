@@ -356,3 +356,48 @@ export async function deleteUserAdmin(req: Request, res: Response) {
     res.status(400).json({ success: false, error: { message: error.message } });
   }
 }
+
+export async function getUserActivities(req: Request, res: Response) {
+  const db: Pool = req.app.get('pgPool');
+  try {
+    const userId = String(req.params.id);
+    const limit = Math.min(Math.max(Number(req.query.limit ?? 50), 1), 200);
+    const offset = Math.max(Number(req.query.offset ?? 0), 0);
+    const action = req.query.action ? String(req.query.action) : undefined;
+    const resourceType = req.query.resourceType ? String(req.query.resourceType) : undefined;
+
+    const clauses: string[] = ['user_id = $1'];
+    const params: any[] = [userId];
+    if (action) {
+      params.push(action);
+      clauses.push(`action = $${params.length}`);
+    }
+    if (resourceType) {
+      params.push(resourceType);
+      clauses.push(`resource_type = $${params.length}`);
+    }
+    const where = 'WHERE ' + clauses.join(' AND ');
+
+    const countSql = `SELECT COUNT(*)::int AS count FROM audit_logs ${where}`;
+    const listSql = `
+      SELECT id, user_id, action, resource_type, resource_id, old_values, new_values, ip_address, user_agent, created_at
+      FROM audit_logs
+      ${where}
+      ORDER BY created_at DESC
+      LIMIT $${params.length + 1}
+      OFFSET $${params.length + 2}
+    `;
+    const [countRes, listRes] = await Promise.all([
+      db.query(countSql, params),
+      db.query(listSql, [...params, limit, offset])
+    ]);
+
+    res.json({
+      success: true,
+      data: listRes.rows,
+      meta: { total: countRes.rows[0].count, limit, offset }
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: { message: error.message } });
+  }
+}

@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import type { Pool } from 'pg';
 import type { MongoClient } from 'mongodb';
+import axios from 'axios';
 import { CacheService, buildCacheKey } from '../services/cache.service.ts';
 import { OrdersService } from '../services/orders.service.ts';
 import { FNOCommunicationService } from '../services/fno-communication.service.ts';
@@ -256,4 +257,91 @@ export async function updateOrder(req: Request, res: Response) {
   } catch (error: any) {
     res.status(400).json({ success: false, error: { message: error.message } });
   }
+}
+
+// --- TBYB Qualification Endpoints ---
+async function qualifyOrderAsTrial(req: Request, res: Response, networkType: 'fiber' | 'wireless'): Promise<void> {
+  try {
+    const db: Pool = req.app.get('pgPool');
+    const trialServiceUrl = process.env.TRIAL_SERVICE_URL || 'http://localhost:3008';
+
+    const { orderId } = req.params as any;
+    const { confirmNoPriorInstallation } = req.body || {};
+
+    if (!orderId) {
+      res.status(400).json({ success: false, error: { message: 'orderId is required' } });
+      return;
+    }
+
+    // Load order (need customer_id, service_details, installation_address)
+    const orderResult = await db.query(
+      `SELECT id, customer_id, service_details, installation_address FROM orders WHERE id = $1`,
+      [orderId]
+    );
+    if (orderResult.rows.length === 0) {
+      res.status(404).json({ success: false, error: { message: 'Order not found' } });
+      return;
+    }
+    const orderRow = orderResult.rows[0];
+
+    // Simulated FNO provisioning check: require explicit confirmation for now
+    if (!confirmNoPriorInstallation) {
+      res.status(409).json({ success: false, error: { message: 'Prior installation not confirmed as absent (set confirmNoPriorInstallation=true)' } });
+      return;
+    }
+
+    // Update customer trial flags (30-day window)
+    const customerUpdate = await db.query(
+      `UPDATE customers
+         SET is_trial = TRUE,
+             trial_start_date = NOW(),
+             trial_end_date = NOW() + INTERVAL '30 days',
+             updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, email, phone`,
+      [orderRow.customer_id]
+    );
+    const customer = customerUpdate.rows[0];
+
+    // Update order service_details → serviceType = 'Trial'
+    const orderUpdate = await db.query(
+      `UPDATE orders
+         SET service_details = jsonb_set(COALESCE(service_details, '{}'::jsonb), '{serviceType}', '"Trial"'::jsonb, true),
+             updated_at = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [orderId]
+    );
+    const updatedOrder = orderUpdate.rows[0];
+
+    // Create trial record in microservice
+    try {
+      const payload = {
+        customerId: updatedOrder.customer_id,
+        orderId: updatedOrder.id,
+        email: customer?.email,
+        phone: customer?.phone,
+        networkType
+      };
+      const { data } = await axios.post(`${trialServiceUrl}/api/internal/trials`, payload, {
+        timeout: 10000,
+        headers: { 'Content-Type': 'application/json' }
+      });
+
+      res.json({ success: true, message: 'Order qualified for TBYB', trial: data?.data || data, order: updatedOrder, customer });
+    } catch (err: any) {
+      // If microservice call fails, still return order/customer update; mark warning
+      res.json({ success: true, message: 'Order qualified for TBYB (trial creation pending)', warning: err?.message || 'Failed to create trial in microservice', order: updatedOrder, customer });
+    }
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: { message: error.message || 'Failed to qualify order' } });
+  }
+}
+
+export async function qualifyFiber(req: Request, res: Response) {
+  return qualifyOrderAsTrial(req, res, 'fiber');
+}
+
+export async function qualifyWireless(req: Request, res: Response) {
+  return qualifyOrderAsTrial(req, res, 'wireless');
 }
