@@ -1,5 +1,5 @@
 import type { Request, Response, NextFunction } from 'express';
-import { AuditService } from '../services/audit.service';
+import { AuditService } from '../services/audit.service.ts';
 import type { Pool } from 'pg';
 
 export function auditMiddleware(action: string, resourceType: string) {

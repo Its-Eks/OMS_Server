@@ -310,6 +310,22 @@ class RobustServer {
     this.app.use('/customers', customerRouter);
     this.app.use('/payments', paymentRouter);
 
+    // Trial management routes (proxy to microservice)
+    try {
+      const trialRouter = (await import('./Routes/trial.routes.ts')).default;
+      this.app.use('/trials', trialRouter);
+    } catch (e) {
+      this.log('warn', 'Routes', 'Trial routes not available');
+    }
+
+    // System settings (admin-only)
+    try {
+      const systemSettingsRouter = (await import('./Routes/systemSettings.routes.ts')).default;
+      this.app.use('/admin/settings', systemSettingsRouter);
+    } catch (e) {
+      this.log('warn', 'Routes', 'System settings routes not available');
+    }
+
     // Health endpoints
     this.app.get('/health', async (req, res) => {
       const overallHealth = Object.values(this.state.services).every(s => s.status === 'healthy');
@@ -321,6 +337,11 @@ class RobustServer {
         metrics: this.state.metrics,
         timestamp: new Date().toISOString()
       });
+    });
+
+    // Always-200 health ping (for service-to-service connectivity checks)
+    this.app.get('/health/ping', (req, res) => {
+      res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
     });
 
     this.app.get('/ready', (req, res) => {
@@ -446,6 +467,7 @@ class RobustServer {
         this.log('info', 'Endpoints', `http://localhost:${this.port}`);
         this.log('info', 'Health Check', `http://localhost:${this.port}/health`);
         this.log('info', 'Metrics', `http://localhost:${this.port}/metrics`);
+        
         
         const bootTime = Date.now() - this.state.startTime.getTime();
         this.log('success', 'System', `Ready in ${bootTime}ms`);

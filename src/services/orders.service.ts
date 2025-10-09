@@ -1,10 +1,14 @@
 import { Pool } from 'pg';
+import axios from 'axios';
 import { WorkflowEngineService } from './workflow-engine.service.ts';
 import { ConfigurableWorkflowService } from './configurable-workflow.service.ts';
 import { WorkflowABTestingService } from './workflow-ab-testing.service.ts';
 import { FNOCommunicationService } from './fno-communication.service.ts';
 import { PolicyService } from './policy.service.ts';
 import type { Order, OrderStatus } from '../models/order.model.ts';
+// import { TrialManagementService } from './TrialManagementService.ts';
+import dotenv from 'dotenv';
+dotenv.config();
 
 export class OrdersService {
   private db: Pool;
@@ -21,6 +25,35 @@ export class OrdersService {
     this.abTestingService = new WorkflowABTestingService(db, this.configurableWorkflow);
     this.fnoCommunication = fnoCommunication;
     this.policyService = policyService;
+  }
+
+  // Ensure an FNO row exists and return its id (by code or name)
+  async ensureFno(nameOrCode?: string): Promise<string> {
+    const client = await this.db.connect();
+    try {
+      const token = (nameOrCode || 'default-fno').toString();
+      const code = token.trim().toLowerCase().replace(/\s+/g, '_').slice(0, 20);
+      // try by code or name
+      const found = await client.query(
+        `SELECT id FROM fnos WHERE code = $1 OR LOWER(name) = LOWER($2) LIMIT 1`,
+        [code, token]
+      );
+      if (found.rows[0]?.id) return found.rows[0].id as string;
+
+      // insert minimal FNO
+      const inserted = await client.query(
+        `INSERT INTO fnos (name, code, integration_type, is_active) VALUES ($1, $2, 'manual', true) RETURNING id`,
+        [token, code]
+      );
+      return inserted.rows[0].id as string;
+    } finally {
+      client.release();
+    }
+  }
+
+  private isTrialService(serviceDetails: any): boolean {
+    const type = (serviceDetails?.serviceType || serviceDetails?.service_type || '').toString().toLowerCase();
+    return type === 'trial';
   }
 
   private isUuidLike(value: unknown): boolean {
@@ -67,7 +100,40 @@ export class OrdersService {
       ]
     );
 
-    const order = result.rows[0];
+    let order = result.rows[0];
+
+    // Check if customer is marked as trial and auto-set order as trial
+    const customerResult = await this.db.query(
+      'SELECT is_trial FROM customers WHERE id = $1', 
+      [orderData.customerId]
+    );
+    const customerIsTrial = customerResult.rows[0]?.is_trial;
+
+    if (customerIsTrial) {
+      console.log(`[orders] Customer ${orderData.customerId} is marked as trial - marking order as trial`);
+      
+      // Auto-set order as trial type (but don't create trial record yet)
+      const updatedServiceDetails = {
+        ...orderData.serviceDetails,
+        serviceType: 'Trial'
+      };
+      
+      // Update the order with trial service type
+      await this.db.query(
+        `UPDATE orders 
+         SET service_details = $1, updated_at = NOW()
+         WHERE id = $2`,
+        [JSON.stringify(updatedServiceDetails), order.id]
+      );
+      
+      console.log(`[orders] Updated order ${order.id} with trial service type - trial record will be created after FNO provisioning`);
+      
+      // Refresh the order object to get updated service_details
+      order = await this.getOrder(order.id);
+      
+      // NOTE: Trial record creation moved to FNO provisioning step
+      // This prevents premature email sending before installation
+    }
 
     // Apply business policies
     await this.applyOrderPolicies(order);
@@ -160,13 +226,27 @@ export class OrdersService {
   }
 
   async updateOrder(orderId: string, updates: any): Promise<Order> {
-    const setClause = Object.keys(updates)
-      .map((key, index) => `${key} = $${index + 2}`)
+    // Map camelCase keys to snake_case DB columns where needed
+    const mappedEntries = Object.entries(updates).map(([key, value]) => {
+      switch (key) {
+        case 'fnoId':
+          return ['fno_id', value] as const;
+        case 'serviceDetails':
+          return ['service_details', value] as const;
+        case 'serviceAddress':
+          return ['installation_address', value] as const;
+        default:
+          return [key, value] as const;
+      }
+    });
+
+    const setClause = mappedEntries
+      .map(([key], index) => `${key} = $${index + 2}`)
       .join(', ');
 
     const result = await this.db.query(
       `UPDATE orders SET ${setClause}, updated_at = NOW() WHERE id = $1 RETURNING *`,
-      [orderId, ...Object.values(updates)]
+      [orderId, ...mappedEntries.map(([, v]) => v)]
     );
 
     if (result.rows.length === 0) {
@@ -440,14 +520,14 @@ export class OrdersService {
       throw new Error('Order not found');
     }
 
-    // Determine FNO based on service address
+    // Determine or create FNO based on service address (fallback default)
     const fnoId = await this.determineFNO(order.serviceAddress);
     
     // Enrich with network-specific parameters
     const networkParams = await this.getNetworkParameters(order.serviceAddress, order.serviceDetails);
     
     // Update order with enriched data
-    await this.updateOrder(orderId, { 
+    await this.updateOrder(orderId, {
       fnoId,
       serviceDetails: {
         ...order.serviceDetails,
@@ -513,6 +593,44 @@ export class OrdersService {
       case 'fno_submitted':
         await this.submitToFNO(order);
         break;
+      case 'fno_accepted':
+        // Notify trial customers that installation scheduling is next
+        try {
+          const orderIsTrial = this.isTrialService(order.serviceDetails);
+          if (orderIsTrial) {
+            const client = await this.db.connect();
+            try {
+              const info = await client.query(
+                `SELECT c.email, c.first_name, c.last_name, o.order_number
+                   FROM orders o
+                   JOIN customers c ON c.id = o.customer_id
+                  WHERE o.id = $1`,
+                [order.id]
+              );
+              const row = info.rows[0];
+              if (row?.email) {
+                const { NotificationService } = await import('../services/notification.service.ts');
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const notif = new NotificationService((global as any).__mongoClient || null);
+                const name = [row.first_name, row.last_name].filter(Boolean).join(' ') || 'Customer';
+                const subject = 'Trial order accepted by FNO – Installation scheduling next';
+                const html = `<p>Hi ${name},</p>
+                              <p>Your trial order <strong>${row.order_number}</strong> has been accepted by the network operator.</p>
+                              <p>We will contact you shortly to schedule your installation. No payment is required yet.</p>
+                              <p>Thank you for trying our service.</p>`;
+                const text = `Hi ${name},\nYour trial order ${row.order_number} has been accepted by the network operator.\nWe will contact you shortly to schedule your installation. No payment is required yet.`;
+                await notif.send({ to: row.email, subject, html, text });
+                console.log(`[orders] Sent installation scheduling notice for trial order ${order.id} to ${row.email}`);
+              }
+            } finally {
+              client.release();
+            }
+          }
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.warn('[orders] fno_accepted trial notification failed:', (e as any)?.message || e);
+        }
+        break;
       case 'installed':
         await this.activateService(order);
         break;
@@ -530,42 +648,63 @@ export class OrdersService {
       const ord = await client.query('SELECT status FROM orders WHERE id = $1', [order.id]);
       const authoritativeStatus = (ord.rows[0]?.status || (order as any).status || (order as any).current_state || '').toString();
 
-      const res = await client.query('SELECT id, current_step FROM customer_onboarding WHERE order_id = $1 ORDER BY started_at DESC LIMIT 1', [order.id]);
+      const res = await client.query('SELECT id, current_step, onboarding_type FROM customer_onboarding WHERE order_id = $1 ORDER BY started_at DESC LIMIT 1', [order.id]);
       if (res.rows.length === 0) return; // no onboarding tied to this order
 
       const onboardingId = res.rows[0].id as string;
+      const onboardingType = (res.rows[0].onboarding_type || '').toString();
       const status = authoritativeStatus;
+      const orderIsTrial = this.isTrialService(order.serviceDetails);
       let step: string | null = null;
-      switch (String(status)) {
-        case 'validated':
-          step = 'initiated';
-          break;
-        case 'enriched':
-          step = 'requirements_confirmed';
-          break;
-        case 'fno_submitted':
-          step = 'provisioning_requested';
-          break;
-        case 'fno_accepted':
-          step = 'provisioning_in_flight';
-          break;
-        case 'installation_scheduled':
-          step = 'installation_scheduled';
-          break;
-        case 'installed':
-          step = 'installation_complete';
-          break;
-        case 'activated':
-          step = 'service_activated';
-          break;
-        case 'completed':
-          step = 'completed';
-          break;
-        case 'cancelled':
-          step = 'cancelled';
-          break;
-        default:
-          step = null;
+      if (orderIsTrial || onboardingType === 'trial') {
+        // For trials, avoid moving through standard installation steps.
+        // Only reflect terminal/activation states to keep onboarding parallel and minimal.
+        switch (String(status)) {
+          case 'activated':
+            step = 'service_activated';
+            break;
+          case 'completed':
+            step = 'completed';
+            break;
+          case 'cancelled':
+            step = 'cancelled';
+            break;
+          default:
+            step = null; // no-op for intermediate statuses on trials
+        }
+      } else {
+        // Standard onboarding mapping
+        switch (String(status)) {
+          case 'validated':
+            step = 'initiated';
+            break;
+          case 'enriched':
+            step = 'requirements_confirmed';
+            break;
+          case 'fno_submitted':
+            step = 'provisioning_requested';
+            break;
+          case 'fno_accepted':
+            step = 'provisioning_in_flight';
+            break;
+          case 'installation_scheduled':
+            step = 'installation_scheduled';
+            break;
+          case 'installed':
+            step = 'installation_complete';
+            break;
+          case 'activated':
+            step = 'service_activated';
+            break;
+          case 'completed':
+            step = 'completed';
+            break;
+          case 'cancelled':
+            step = 'cancelled';
+            break;
+          default:
+            step = null;
+        }
       }
       if (step === null) return;
 
@@ -654,9 +793,9 @@ export class OrdersService {
   }
 
   private async determineFNO(address: any): Promise<string> {
-    // TODO: Implement FNO determination logic based on address
-    // For now, return a default FNO
-    return 'default-fno';
+    // TODO: Implement proper FNO determination based on address
+    // For now, ensure a default FNO exists and return its id
+    return await this.ensureFno('default-fno');
   }
 
   private async validateAddress(address: any): Promise<void> {
@@ -761,11 +900,16 @@ export class OrdersService {
       const first = customer.rows[0]?.first_name || null;
       const last = customer.rows[0]?.last_name || null;
 
+      // Read order details to determine onboarding type
+      const orderRow = await client.query('SELECT service_details FROM orders WHERE id = $1', [orderId]);
+      const serviceDetails = orderRow.rows[0]?.service_details || {};
+      const onboardingType = this.isTrialService(serviceDetails) ? 'trial' : 'standard';
+
       // Create onboarding anchored to this order
       await client.query(
         `INSERT INTO customer_onboarding (customer_id, order_id, onboarding_type, current_step, completion_percentage, assigned_to, customer_email, customer_first_name, customer_last_name, started_at)
          VALUES ($1, $2, $3, 'created', 5, NULL, $4, $5, $6, NOW())`,
-        [customerId, orderId, 'standard', email, first, last]
+        [customerId, orderId, onboardingType, email, first, last]
       );
       await client.query('COMMIT');
     } catch (e) {
@@ -810,5 +954,157 @@ export class OrdersService {
   // Create A/B test
   async createABTest(test: any, createdBy: string): Promise<any> {
     return await this.abTestingService.createABTest(test, createdBy);
+  }
+
+  // Convert trial customer to regular customer
+  private async convertTrialToRegularCustomer(customerId: string): Promise<void> {
+    try {
+      // Update customer trial flags
+      await this.db.query(
+        `UPDATE customers
+         SET is_trial = FALSE,
+             trial_start_date = NULL,
+             trial_end_date = NULL,
+             updated_at = NOW()
+       WHERE id = $1`,
+        [customerId]
+      );
+
+      console.log(`Customer ${customerId} converted from trial to regular`);
+    } catch (error) {
+      console.error('Failed to convert trial customer to regular:', error);
+      throw error;
+    }
+  }
+
+  // Remove trial record from microservice
+  private async removeTrialRecord(orderId: string): Promise<void> {
+    try {
+      const trialServiceUrl = process.env.TRIAL_SERVICE_URL;
+      
+      // First, get the trial ID by order ID
+      const trialResponse = await axios.get(
+        `${trialServiceUrl}/api/internal/trials/by-order/${orderId}`,
+        {
+          timeout: 10000,
+          headers: { 'Content-Type': 'application/json' }
+        }
+      );
+
+      if (trialResponse.data?.data?.id) {
+        const trialId = trialResponse.data.data.id;
+        
+        // Delete the trial record
+        await axios.delete(
+          `${trialServiceUrl}/api/internal/trials/${trialId}`,
+          {
+            timeout: 10000,
+            headers: { 'Content-Type': 'application/json' }
+          }
+        );
+
+        console.log(`Trial record ${trialId} removed for order: ${orderId}`);
+      }
+    } catch (error) {
+      console.error('Failed to remove trial record:', error);
+      // Don't throw - trial removal failure shouldn't break order processing
+    }
+  }
+
+  // Create trial customer when order service type is 'Trial'
+  private async createTrialCustomer(order: any): Promise<void> {
+    try {
+      console.log(`[orders] Creating trial customer for order ${order.id}`);
+      
+      // Get customer details for trial creation (including name)
+      const customerResult = await this.db.query(
+        'SELECT email, phone, first_name, last_name FROM customers WHERE id = $1',
+        [order.customer_id]
+      );
+
+      if (customerResult.rows.length === 0) {
+        console.error(`[orders] Customer not found for trial creation: ${order.customer_id}`);
+        return;
+      }
+
+      const customer = customerResult.rows[0];
+      const customerName = `${customer.first_name || ''} ${customer.last_name || ''}`.trim() || 'Customer';
+      const trialServiceUrl = process.env.TRIAL_SERVICE_URL;
+
+      console.log(`[orders] Calling trial service at ${trialServiceUrl}/api/internal/trials`);
+
+      const response = await axios.post(
+        `${trialServiceUrl}/api/internal/trials`,
+        {
+          customerId: order.customer_id,
+          orderId: order.id,
+          email: customer.email,
+          phone: customer.phone || '',
+          metadata: {
+            name: customerName,
+            firstName: customer.first_name,
+            lastName: customer.last_name
+          }
+        },
+        {
+          timeout: 10000,
+          headers: { 'Content-Type': 'application/json' }
+        }
+      );
+
+      console.log(`[orders] Trial customer created successfully: ${response.data?.data?.id || 'unknown'} for order: ${order.id}`);
+    } catch (error) {
+      console.error('[orders] Failed to create trial customer via microservice:', error);
+      console.error('[orders] Error details:', {
+        message: (error as any)?.message,
+        response: (error as any)?.response?.data,
+        status: (error as any)?.response?.status
+      });
+      
+      // Fallback: Create trial record directly in OMS database
+      try {
+        console.log('[orders] Attempting fallback: creating trial record in OMS database');
+        
+        // Get customer details again for fallback
+        const fallbackCustomerResult = await this.db.query(
+          'SELECT email, phone, first_name, last_name FROM customers WHERE id = $1',
+          [order.customer_id]
+        );
+        
+        if (fallbackCustomerResult.rows.length > 0) {
+          const fallbackCustomer = fallbackCustomerResult.rows[0];
+          const customerName = `${fallbackCustomer.first_name || ''} ${fallbackCustomer.last_name || ''}`.trim() || 'Customer';
+          
+          await this.db.query(
+            `INSERT INTO trial_customers (
+              id, customer_id, order_id, email, phone, status, 
+              trial_start_date, trial_end_date, engagement_level, 
+              engagement_score, total_data_usage_gb, metadata, created_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())`,
+            [
+              require('crypto').randomUUID(),
+              order.customer_id,
+              order.id,
+              fallbackCustomer.email,
+              fallbackCustomer.phone || '',
+              'ACTIVE',
+              new Date(),
+              new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now
+              'WARM',
+              50,
+              0,
+              JSON.stringify({
+                name: customerName,
+                firstName: fallbackCustomer.first_name,
+                lastName: fallbackCustomer.last_name
+              })
+            ]
+          );
+          console.log('[orders] Fallback trial record created successfully in OMS database');
+        }
+      } catch (fallbackError) {
+        console.error('[orders] Fallback trial creation also failed:', fallbackError);
+      }
+    }
   }
 }
