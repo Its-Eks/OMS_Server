@@ -37,6 +37,7 @@ import { AnalyticsService } from './services/analytics.service.ts';
 import { createAnalyticsController } from './Controllers/analytics.controller.ts';
 import realtimeMetricsRouter from './Routes/realtime-metrics.routes.ts';
 import { RealtimeMetricsService } from './services/realtime-metrics.service.ts';
+import { authorize } from './Middleware/authMiddleware.ts';
 
 dotenv.config();
 
@@ -318,7 +319,7 @@ class RobustServer {
     // Analytics routes (static imports)
     const analyticsService = new AnalyticsService(pgPool as any, redis as any);
     const analyticsController = createAnalyticsController(analyticsService);
-    this.app.use('/analytics', (req, res, next) => {
+    this.app.use('/analytics', authorize, (req: any, res: any, next: any) => {
       (req as any).analyticsController = analyticsController;
       next();
     }, analyticsRouter);
@@ -329,11 +330,23 @@ class RobustServer {
     if (typeof (realtimeMetricsService as any).start === 'function') {
       (realtimeMetricsService as any).start();
     }
-    this.app.use('/realtime', (req, res, next) => {
+    this.app.use('/realtime', authorize, (req: any, res: any, next: any) => {
       (req as any).realtimeMetricsService = realtimeMetricsService;
       next();
     }, realtimeMetricsRouter);
     this.log('success', 'Routes', 'Realtime routes mounted');
+
+    // Start report cleanup job (runs every hour)
+    setInterval(async () => {
+      try {
+        const { ReportExportService } = await import('./services/report-export.service.ts');
+        const exportService = new ReportExportService(analyticsService);
+        await exportService.cleanupExpiredReports();
+        this.log('info', 'Cleanup', 'Expired reports cleaned up');
+      } catch (error: any) {
+        this.log('error', 'Cleanup', `Failed to cleanup reports: ${error.message}`);
+      }
+    }, 60 * 60 * 1000); // Every hour
 
     // Health endpoints
     this.app.get('/health', async (req, res) => {

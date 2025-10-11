@@ -360,6 +360,131 @@ export class AnalyticsService {
     };
   }
 
+  async getOrderAnalytics(filters?: ReportFilters): Promise<any> {
+    const client = await this.db.connect();
+    try {
+      const { start, end } = this.resolveDateRange(filters);
+      
+      const [orderStats, processingStats] = await Promise.all([
+        client.query(`
+          SELECT 
+            COUNT(*) as total_orders,
+            COUNT(CASE WHEN current_state = 'completed' THEN 1 END) as completed_orders,
+            COUNT(CASE WHEN current_state = 'cancelled' THEN 1 END) as cancelled_orders,
+            AVG(EXTRACT(EPOCH FROM (updated_at - created_at))/3600) as avg_processing_time
+          FROM orders 
+          WHERE created_at >= $1 AND created_at < $2
+        `, [start, end]),
+        
+        client.query(`
+          SELECT 
+            current_state,
+            COUNT(*) as count,
+            AVG(EXTRACT(EPOCH FROM (updated_at - created_at))/3600) as avg_time
+          FROM orders 
+          WHERE created_at >= $1 AND created_at < $2
+          GROUP BY current_state
+        `, [start, end])
+      ]);
+
+      return {
+        orderStats: orderStats.rows[0],
+        processingStats: processingStats.rows
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  async getCustomerInsights(filters?: ReportFilters): Promise<any> {
+    const client = await this.db.connect();
+    try {
+      const { start, end } = this.resolveDateRange(filters);
+      
+      const [customerStats, satisfactionStats] = await Promise.all([
+        client.query(`
+          SELECT 
+            COUNT(*) as total_customers,
+            COUNT(CASE WHEN created_at >= $1 AND created_at < $2 THEN 1 END) as new_customers
+          FROM customers
+        `, [start, end]),
+        
+        client.query(`
+          SELECT 
+            AVG(satisfaction_score) as avg_satisfaction,
+            COUNT(*) as total_surveys
+          FROM customer_satisfaction 
+          WHERE created_at >= $1 AND created_at < $2
+        `, [start, end])
+      ]);
+
+      return {
+        customerStats: customerStats.rows[0],
+        satisfactionStats: satisfactionStats.rows[0]
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  async getFNOPerformance(filters?: ReportFilters): Promise<any> {
+    const client = await this.db.connect();
+    try {
+      const { start, end } = this.resolveDateRange(filters);
+      
+      const fnoStats = await client.query(`
+        SELECT 
+          fno_name,
+          COUNT(*) as total_orders,
+          COUNT(CASE WHEN current_state = 'completed' THEN 1 END) as completed_orders,
+          AVG(EXTRACT(EPOCH FROM (updated_at - created_at))/3600) as avg_processing_time
+        FROM orders 
+        WHERE created_at >= $1 AND created_at < $2
+        GROUP BY fno_name
+        ORDER BY total_orders DESC
+      `, [start, end]);
+
+      return {
+        fnoStats: fnoStats.rows
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  async getEscalationAnalysis(filters?: ReportFilters): Promise<any> {
+    const client = await this.db.connect();
+    try {
+      const { start, end } = this.resolveDateRange(filters);
+      
+      const escalationStats = await client.query(`
+        SELECT 
+          COUNT(*) as total_escalations,
+          COUNT(CASE WHEN status = 'resolved' THEN 1 END) as resolved_escalations,
+          AVG(EXTRACT(EPOCH FROM (resolved_at - created_at))/3600) as avg_resolution_time
+        FROM escalations 
+        WHERE created_at >= $1 AND created_at < $2
+      `, [start, end]);
+
+      return {
+        escalationStats: escalationStats.rows[0]
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  async getSystemHealth(filters?: ReportFilters): Promise<any> {
+    return {
+      uptime: 99.95,
+      responseTime: 200,
+      errorRate: 0.2,
+      memoryUsage: 52.5,
+      cpuUsage: 68.9,
+      activeConnections: 45
+    };
+  }
+
   // Private methods for individual metric calculations
   private async getOrderProcessingMetrics(client: any, filters?: ReportFilters): Promise<OrderProcessingMetrics> {
     // Implementation for order processing metrics

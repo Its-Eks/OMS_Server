@@ -1,12 +1,14 @@
 import type { Request, Response } from 'express';
 import { AnalyticsService } from '../services/analytics.service.ts';
-import type { ReportFilters, ExportOptions } from '../services/analytics.service.ts';
+import { ReportExportService, type ReportFilters, type ExportOptions } from '../services/report-export.service.ts';
 
 export class AnalyticsController {
   private analyticsService: AnalyticsService;
+  private reportExportService: ReportExportService;
 
   constructor(analyticsService: AnalyticsService) {
     this.analyticsService = analyticsService;
+    this.reportExportService = new ReportExportService(analyticsService);
   }
 
   async getKPIMetrics(req: Request, res: Response): Promise<void> {
@@ -158,12 +160,12 @@ export class AnalyticsController {
         customFields: req.query.customFields ? (req.query.customFields as string).split(',') : undefined
       };
 
-      const result = await this.analyticsService.exportReport(reportType, filters, exportOptions);
+      const result = await this.reportExportService.exportReport(reportType, filters, exportOptions);
       
       res.json({
         success: true,
         data: result,
-        message: 'Report generation initiated. Download link will be available shortly.'
+        message: 'Report generated successfully. Download link is ready.'
       });
     } catch (error: any) {
       console.error('Error exporting report:', error);
@@ -209,17 +211,31 @@ export class AnalyticsController {
     try {
       const { filename } = req.params;
       
-      // This would serve the actual report file
-      // For now, returning a mock response
-      res.json({
-        success: true,
-        data: {
-          filename,
-          url: `/api/analytics/reports/files/${filename}`,
-          size: '2.3 MB',
-          format: filename.split('.').pop()?.toUpperCase() || 'CSV'
-        }
-      });
+      const { filePath, exists } = await this.reportExportService.getReportFile(filename);
+      
+      if (!exists) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            message: 'Report file not found',
+            code: 'REPORT_NOT_FOUND'
+          }
+        });
+      }
+
+      // Set appropriate headers for file download
+      const stats = require('fs').statSync(filePath);
+      const fileSize = stats.size;
+      const format = filename.split('.').pop()?.toUpperCase() || 'CSV';
+      
+      res.setHeader('Content-Type', this.getContentType(format));
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.setHeader('Content-Length', fileSize);
+      
+      // Stream the file to the response
+      const fileStream = require('fs').createReadStream(filePath);
+      fileStream.pipe(res);
+      
     } catch (error: any) {
       console.error('Error downloading report:', error);
       res.status(500).json({
@@ -229,6 +245,22 @@ export class AnalyticsController {
           code: 'REPORT_DOWNLOAD_FAILED'
         }
       });
+    }
+  }
+
+  private getContentType(format: string): string {
+    switch (format.toLowerCase()) {
+      case 'csv':
+        return 'text/csv';
+      case 'json':
+        return 'application/json';
+      case 'pdf':
+        return 'application/pdf';
+      case 'excel':
+      case 'xlsx':
+        return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      default:
+        return 'application/octet-stream';
     }
   }
 
