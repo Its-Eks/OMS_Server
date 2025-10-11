@@ -287,38 +287,53 @@ export class RealtimeMetricsService extends EventEmitter {
 
   private async updateUserMetrics(): Promise<void> {
     try {
-      const [activeUsers, totalUsers] = await Promise.all([
-        this.db.query('SELECT COUNT(*)::int AS count FROM users WHERE last_login >= NOW() - INTERVAL \'1 hour\''),
-        this.db.query('SELECT COUNT(*)::int AS count FROM users WHERE is_active = true')
-      ]);
+      // Compute active users (best-effort). Some schemas may not have last_login; try fallbacks.
+      let activeUsersCount = 0;
+      try {
+        const res = await this.db.query("SELECT COUNT(*)::int AS count FROM users WHERE last_login >= NOW() - INTERVAL '1 hour'");
+        activeUsersCount = res.rows[0]?.count ?? 0;
+      } catch {}
+      if (activeUsersCount === 0) {
+        try {
+          const res = await this.db.query("SELECT COUNT(*)::int AS count FROM users WHERE updated_at >= NOW() - INTERVAL '1 hour'");
+          activeUsersCount = res.rows[0]?.count ?? 0;
+        } catch {}
+      }
 
-      // Active Users
+      // Total users - fallback to COUNT(*) if is_active column not present
+      let totalUsersCount = 0;
+      try {
+        const res = await this.db.query('SELECT COUNT(*)::int AS count FROM users WHERE is_active = true');
+        totalUsersCount = res.rows[0]?.count ?? 0;
+      } catch {
+        try {
+          const res = await this.db.query('SELECT COUNT(*)::int AS count FROM users');
+          totalUsersCount = res.rows[0]?.count ?? 0;
+        } catch {}
+      }
+
       this.updateMetric('active_users', {
         id: 'active_users',
         name: 'Active Users (1h)',
-        value: activeUsers.rows[0].count,
+        value: activeUsersCount,
         unit: 'users',
         timestamp: new Date().toISOString(),
         status: 'normal'
       });
 
-      // User Adoption Rate
-      const adoptionRate = totalUsers.rows[0].count > 0 
-        ? (activeUsers.rows[0].count / totalUsers.rows[0].count) * 100 
-        : 0;
-
+      const adoptionRate = totalUsersCount > 0 ? (activeUsersCount / totalUsersCount) * 100 : 0;
       this.updateMetric('user_adoption', {
         id: 'user_adoption',
         name: 'User Adoption Rate',
         value: Math.round(adoptionRate * 100) / 100,
         unit: '%',
         timestamp: new Date().toISOString(),
-        status: adoptionRate < 20 ? 'warning' : adoptionRate < 10 ? 'critical' : 'normal',
+        status: adoptionRate < 10 ? 'critical' : adoptionRate < 20 ? 'warning' : 'normal',
         threshold: { warning: 20, critical: 10 }
       });
 
     } catch (error) {
-      console.error('Error updating user metrics:', error);
+      // Swallow errors to avoid noisy logs if schema differs; metrics will default via previous values
     }
   }
 

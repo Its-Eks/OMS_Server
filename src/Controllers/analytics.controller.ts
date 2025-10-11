@@ -1,5 +1,6 @@
-import { Request, Response } from 'express';
-import { AnalyticsService, ReportFilters, ExportOptions } from '../services/analytics.service.ts';
+import type { Request, Response } from 'express';
+import { AnalyticsService } from '../services/analytics.service.ts';
+import type { ReportFilters, ExportOptions } from '../services/analytics.service.ts';
 
 export class AnalyticsController {
   private analyticsService: AnalyticsService;
@@ -310,10 +311,59 @@ export class AnalyticsController {
   private buildFiltersFromQuery(query: any): ReportFilters {
     const filters: ReportFilters = {};
 
-    if (query.startDate && query.endDate) {
+    const normalizeDate = (input: any, isEnd: boolean = false): string | undefined => {
+      if (!input || typeof input !== 'string') return undefined;
+      const value = input.trim();
+
+      // YYYY-MM-DD
+      if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        const date = new Date(value + 'T' + (isEnd ? '23:59:59.999Z' : '00:00:00.000Z'));
+        return isNaN(date.getTime()) ? undefined : date.toISOString();
+      }
+
+      // YYYY-MM
+      if (/^\d{4}-\d{2}$/.test(value)) {
+        const [yearStr, monthStr] = value.split('-');
+        const year = Number(yearStr);
+        const month = Number(monthStr); // 1-12
+        if (year >= 1970 && month >= 1 && month <= 12) {
+          if (isEnd) {
+            const lastDay = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999)); // day 0 of next month = last day of month
+            return lastDay.toISOString();
+          }
+          const firstDay = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0, 0));
+          return firstDay.toISOString();
+        }
+      }
+
+      // YYYY
+      if (/^\d{4}$/.test(value)) {
+        const year = Number(value);
+        if (year >= 1970) {
+          if (isEnd) {
+            const end = new Date(Date.UTC(year, 11, 31, 23, 59, 59, 999));
+            return end.toISOString();
+          }
+          const start = new Date(Date.UTC(year, 0, 1, 0, 0, 0, 0));
+          return start.toISOString();
+        }
+      }
+
+      // Fallback: try Date.parse
+      const parsed = new Date(value);
+      return isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
+    };
+
+    const start = normalizeDate(query.startDate, false);
+    const end = normalizeDate(query.endDate, true);
+
+    if (start || end) {
+      const now = new Date();
+      const defaultEnd = end ? new Date(end) : now;
+      const defaultStart = start ? new Date(start) : new Date(defaultEnd.getTime() - 30 * 24 * 60 * 60 * 1000);
       filters.dateRange = {
-        start: query.startDate,
-        end: query.endDate
+        start: defaultStart.toISOString(),
+        end: defaultEnd.toISOString()
       };
     }
 

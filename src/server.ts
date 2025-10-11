@@ -32,6 +32,11 @@ import customerRouter from './Routes/customer-hybrid.routes.ts';
 import { OnboardingSlaScheduler } from './services/onboarding-sla.scheduler.ts';
 import dashboardRouter from './Routes/dashboard.routes.ts';
 import paymentRouter from './Routes/paymentRoutes.ts'; 
+import analyticsRouter from './Routes/analytics.routes.ts';
+import { AnalyticsService } from './services/analytics.service.ts';
+import { createAnalyticsController } from './Controllers/analytics.controller.ts';
+import realtimeMetricsRouter from './Routes/realtime-metrics.routes.ts';
+import { RealtimeMetricsService } from './services/realtime-metrics.service.ts';
 
 dotenv.config();
 
@@ -310,47 +315,25 @@ class RobustServer {
     this.app.use('/customers', customerRouter);
     this.app.use('/payments', paymentRouter);
     
-    // Analytics routes
-    try {
-      const analyticsRouter = (await import('./Routes/analytics.routes.ts')).default;
-      const { AnalyticsService } = await import('./services/analytics.service.ts');
-      // Use shared pgPool and redis instances
-      const analyticsService = new AnalyticsService(pgPool as any, redis as any);
-      const { createAnalyticsController } = await import('./Controllers/analytics.controller.ts');
-      const analyticsController = createAnalyticsController(analyticsService);
-      
-      // Attach analytics controller to requests
-      this.app.use('/analytics', (req, res, next) => {
-        (req as any).analyticsController = analyticsController;
-        next();
-      }, analyticsRouter);
-      this.log('success', 'Routes', 'Analytics routes mounted');
-    } catch (e) {
-      this.log('warn', 'Routes', 'Analytics routes not available');
-    }
+    // Analytics routes (static imports)
+    const analyticsService = new AnalyticsService(pgPool as any, redis as any);
+    const analyticsController = createAnalyticsController(analyticsService);
+    this.app.use('/analytics', (req, res, next) => {
+      (req as any).analyticsController = analyticsController;
+      next();
+    }, analyticsRouter);
+    this.log('success', 'Routes', 'Analytics routes mounted');
 
-    // Real-time metrics routes
-    try {
-      const realtimeMetricsRouter = (await import('./Routes/realtime-metrics.routes.ts')).default;
-      const { RealtimeMetricsService } = await import('./services/realtime-metrics.service.ts');
-      // Pass pgPool and redis if required by the service
-      const realtimeMetricsService = new RealtimeMetricsService(pgPool as any, redis as any);
-      
-      // Start real-time metrics service
-      if (typeof (realtimeMetricsService as any).start === 'function') {
-        (realtimeMetricsService as any).start();
-      }
-      
-      // Attach realtime metrics service to requests
-      this.app.use('/realtime', (req, res, next) => {
-        (req as any).realtimeMetricsService = realtimeMetricsService;
-        next();
-      }, realtimeMetricsRouter);
-      
-      this.log('success', 'Routes', 'Realtime routes mounted');
-    } catch (e) {
-      this.log('warn', 'Routes', 'Real-time metrics routes not available');
+    // Real-time metrics routes (static imports)
+    const realtimeMetricsService = new RealtimeMetricsService(pgPool as any);
+    if (typeof (realtimeMetricsService as any).start === 'function') {
+      (realtimeMetricsService as any).start();
     }
+    this.app.use('/realtime', (req, res, next) => {
+      (req as any).realtimeMetricsService = realtimeMetricsService;
+      next();
+    }, realtimeMetricsRouter);
+    this.log('success', 'Routes', 'Realtime routes mounted');
 
     // Health endpoints
     this.app.get('/health', async (req, res) => {

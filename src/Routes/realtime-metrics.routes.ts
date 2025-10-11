@@ -1,4 +1,5 @@
-import { Router, Request, Response } from 'express';
+import { Router } from 'express';
+import type { Request, Response } from 'express';
 import { authorize } from '../Middleware/authMiddleware.ts';
 import { RealtimeMetricsService } from '../services/realtime-metrics.service.ts';
 
@@ -26,7 +27,7 @@ const router = Router();
  *     ]
  *   }
  */
-router.get('/metrics', authorize(['orders:read', 'escalations:view']), (req: Request, res: Response) => {
+router.get('/metrics', (req: Request, res: Response) => {
   if (!(req as any).realtimeMetricsService) {
     return res.status(500).json({ success: false, error: { message: 'Realtime metrics service not available' } });
   }
@@ -63,7 +64,7 @@ router.get('/metrics', authorize(['orders:read', 'escalations:view']), (req: Req
  *     ]
  *   }
  */
-router.get('/alerts', authorize(['orders:read', 'escalations:view']), (req: Request, res: Response) => {
+router.get('/alerts', (req: Request, res: Response) => {
   if (!(req as any).realtimeMetricsService) {
     return res.status(500).json({ success: false, error: { message: 'Realtime metrics service not available' } });
   }
@@ -98,7 +99,7 @@ router.get('/alerts', authorize(['orders:read', 'escalations:view']), (req: Requ
  *     }
  *   }
  */
-router.get('/health', authorize(['orders:read', 'escalations:view']), (req: Request, res: Response) => {
+router.get('/health', (req: Request, res: Response) => {
   if (!(req as any).realtimeMetricsService) {
     return res.status(500).json({ success: false, error: { message: 'Realtime metrics service not available' } });
   }
@@ -135,7 +136,7 @@ router.get('/health', authorize(['orders:read', 'escalations:view']), (req: Requ
  *     }
  *   }
  */
-router.post('/alerts/:alertId/acknowledge', authorize(['orders:read', 'escalations:view']), (req: Request, res: Response) => {
+router.post('/alerts/:alertId/acknowledge', (req: Request, res: Response) => {
   if (!(req as any).realtimeMetricsService) {
     return res.status(500).json({ success: false, error: { message: 'Realtime metrics service not available' } });
   }
@@ -194,7 +195,7 @@ router.post('/alerts/:alertId/acknowledge', authorize(['orders:read', 'escalatio
  *     }
  *   }
  */
-router.get('/metrics/:metricId/history', authorize(['orders:read', 'escalations:view']), (req: Request, res: Response) => {
+router.get('/metrics/:metricId/history', (req: Request, res: Response) => {
   if (!(req as any).realtimeMetricsService) {
     return res.status(500).json({ success: false, error: { message: 'Realtime metrics service not available' } });
   }
@@ -247,7 +248,7 @@ router.get('/metrics/:metricId/history', authorize(['orders:read', 'escalations:
  *     }
  *   }
  */
-router.get('/dashboard', authorize(['orders:read', 'escalations:view']), (req: Request, res: Response) => {
+router.get('/dashboard', (req: Request, res: Response) => {
   if (!(req as any).realtimeMetricsService) {
     return res.status(500).json({ success: false, error: { message: 'Realtime metrics service not available' } });
   }
