@@ -220,10 +220,53 @@ export class CustomerHybridService {
     return null;
   }
 
-  // Create customer (proxied to onboarding service)
+  // Create customer (direct database creation with UUID)
   async createCustomer(customerData: CreateCustomerData): Promise<Customer> {
+    try {
+      // Generate a short customer number
+      const customerNumber = `CUST-${Math.floor(Math.random() * 100000).toString().padStart(5, '0')}`;
+      
+      // Create customer directly in database with UUID
+      const result = await this.pgPool.query(
+        `INSERT INTO customers (
+           id, customer_number, first_name, last_name, email, phone, address,
+           customer_type, is_trial, trial_start_date, trial_end_date, created_at, updated_at
+         ) VALUES (
+           gen_random_uuid(), $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, NOW(), NOW()
+         ) RETURNING 
+           id, customer_number, first_name, last_name, email, phone, address,
+           customer_type, is_trial, trial_start_date, trial_end_date, created_at, updated_at`,
+        [
+          customerNumber,
+          customerData.first_name,
+          customerData.last_name,
+          customerData.email,
+          customerData.phone,
+          JSON.stringify(customerData.address),
+          customerData.customer_type || 'individual',
+          customerData.is_trial || false,
+          customerData.trial_start_date || null,
+          customerData.trial_end_date || null
+        ]
+      );
+
+      if (result.rows.length === 0) {
+        throw new Error('Failed to create customer');
+      }
+
+      return this.mapRowToCustomer(result.rows[0]);
+    } catch (error: any) {
+      console.error('Error creating customer directly:', error);
+      
+      // If database creation fails, fallback to onboarding service
+      console.log('Falling back to onboarding service...');
+      return await this.createCustomerViaOnboarding(customerData);
+    }
+  }
+
+  // Fallback method to create customer via onboarding service
+  private async createCustomerViaOnboarding(customerData: CreateCustomerData): Promise<Customer> {
     const customPath = process.env.ONBOARDING_CUSTOMER_CREATE_PATH;
-    // Only use the canonical path unless explicitly overridden via env
     const candidates = [
       customPath || '/api/onboarding/customers'
     ];
