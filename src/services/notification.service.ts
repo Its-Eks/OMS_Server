@@ -137,21 +137,20 @@ export class NotificationService {
     this.rules = this.db.collection<NotificationRuleDoc>('notification_rules');
     this.events = this.db.collection<UserEventDoc>('user_events');
 
-    // Prefer Resend API if configured
+    // Prefer Resend API if configured, but always initialize SMTP as fallback
     this.useResend = !!process.env.RESEND_API_KEY;
     if (this.useResend) {
-      console.log('[notification] ✅ Resend API enabled');
-      // No SMTP transporter needed when using Resend
-      this.transporter = null;
-      this.isTransporterReady = true;
+      console.log('[notification] ✅ Resend API enabled (with SMTP fallback)');
     } else {
-      // Initialize or reuse a shared SMTP transporter
-      if (NotificationService.sharedTransporter) {
-        this.transporter = NotificationService.sharedTransporter;
-        this.isTransporterReady = NotificationService.sharedReady;
-      } else {
-        this.initializeTransporter();
-      }
+      console.log('[notification] 📧 Using SMTP as primary email service');
+    }
+    
+    // Always initialize or reuse a shared SMTP transporter for fallback
+    if (NotificationService.sharedTransporter) {
+      this.transporter = NotificationService.sharedTransporter;
+      this.isTransporterReady = NotificationService.sharedReady;
+    } else {
+      this.initializeTransporter();
     }
   }
 
@@ -575,11 +574,14 @@ export class NotificationService {
         return true;
       } catch (err: any) {
         console.error('[notification] ❌ Resend email failed:', err?.response?.data || err?.message || err);
+        console.log('[notification] 🔄 Falling back to SMTP...');
         // fall through to SMTP if available
       }
     }
 
+    // SMTP fallback
     if (!this.transporter) {
+      console.log('[notification] ❌ No SMTP transporter available for fallback');
       console.log('[notification] send (noop - no transporter):', options.subject, '->', options.to);
       return false;
     }
@@ -605,7 +607,8 @@ export class NotificationService {
         html: options.html,
       });
       
-      console.log('[notification] ✅ Email sent successfully:', {
+      const method = this.useResend ? 'SMTP (fallback)' : 'SMTP';
+      console.log(`[notification] ✅ Email sent successfully via ${method}:`, {
         to: options.to,
         subject: options.subject,
         messageId: result.messageId

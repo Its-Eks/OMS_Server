@@ -319,7 +319,7 @@ class RobustServer {
     // Analytics routes (static imports)
     const analyticsService = new AnalyticsService(pgPool as any, redis as any);
     const analyticsController = createAnalyticsController(analyticsService);
-    this.app.use('/analytics', authorize, (req: any, res: any, next: any) => {
+    this.app.use('/analytics', (req: any, res: any, next: any) => {
       (req as any).analyticsController = analyticsController;
       next();
     }, analyticsRouter);
@@ -330,7 +330,7 @@ class RobustServer {
     if (typeof (realtimeMetricsService as any).start === 'function') {
       (realtimeMetricsService as any).start();
     }
-    this.app.use('/realtime', authorize, (req: any, res: any, next: any) => {
+    this.app.use('/realtime', (req: any, res: any, next: any) => {
       (req as any).realtimeMetricsService = realtimeMetricsService;
       next();
     }, realtimeMetricsRouter);

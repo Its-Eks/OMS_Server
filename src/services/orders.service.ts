@@ -50,18 +50,20 @@ export class OrdersService {
     // Create order
     const result = await this.db.query(
       `INSERT INTO orders (
-        customer_id, order_number, order_type, status, priority,
-        installation_address, service_details, created_by, assigned_to, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+        customer_id, order_number, service_type, service_package, 
+        installation_address, fno_id, current_state, priority, 
+        created_by, assigned_to, created_at, updated_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
       RETURNING *`,
       [
         orderData.customerId,
         orderNumber,
-        orderData.orderType,
-        'created',
-        orderData.priority || 'medium',
+        orderData.serviceDetails?.serviceType || 'internet',
+        orderData.serviceDetails?.package || `${orderData.serviceDetails?.bandwidth || '100/50'} Mbps`,
         JSON.stringify(orderData.serviceAddress),
-        JSON.stringify(orderData.serviceDetails),
+        orderData.fnoId || null,
+        'created',
+        orderData.priority || 'normal',
         createdBy,
         createdBy
       ]
@@ -498,9 +500,8 @@ export class OrdersService {
 
   private async generateOrderNumber(): Promise<string> {
     const prefix = 'ORD';
-    const timestamp = Date.now().toString(36);
-    const random = Math.random().toString(36).substr(2, 4);
-    return `${prefix}-${timestamp}-${random}`.toUpperCase();
+    const random = Math.floor(Math.random() * 100000).toString().padStart(5, '0');
+    return `${prefix}-${random}`;
   }
 
   private async applyOrderPolicies(order: Order): Promise<void> {
