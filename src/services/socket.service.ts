@@ -18,7 +18,12 @@ export class SocketService {
     if (this.io) return this.io;
     const io = new IOServer(httpServer, {
       cors: {
-        origin: (process.env.CORS_ORIGIN || '').split(',').filter(Boolean).concat(['http://localhost:5173', 'http://127.0.0.1:5173'])
+        origin: (process.env.CORS_ORIGIN || '').split(',').filter(Boolean).concat([
+          'http://localhost:5173', 
+          'http://127.0.0.1:5173',
+          'https://oms-client-01ry.onrender.com',
+          'https://oms-server-ntlv.onrender.com'
+        ])
       }
     });
 
