@@ -24,6 +24,8 @@ export interface Address {
   state: string;
   postal_code: string;
   country: string;
+  // Support for alternative field names
+  province?: string; // Alternative to state
 }
 
 export interface CreateCustomerData {
@@ -220,22 +222,27 @@ export class CustomerHybridService {
     return null;
   }
 
-  // Create customer (direct database creation with UUID)
+  // Create customer (directly in OMS Backend database)
   async createCustomer(customerData: CreateCustomerData): Promise<Customer> {
     try {
-      // Generate a short customer number
-      const customerNumber = `CUST-${Math.floor(Math.random() * 100000).toString().padStart(5, '0')}`;
+      // Generate customer number
+      const customerNumber = `CUST-${Math.floor(Math.random() * 100000)}`;
       
-      // Create customer directly in database with UUID
+      // Don't set trial dates when creating customer - only when they place a trial order
+      // Trial dates should be automatically calculated when a trial order is created
+      let trialStartDate = null;
+      let trialEndDate = null;
+      
+      // Insert customer directly into OMS Backend database
       const result = await this.pgPool.query(
         `INSERT INTO customers (
-           id, customer_number, first_name, last_name, email, phone, address,
-           customer_type, is_trial, trial_start_date, trial_end_date, created_at, updated_at
-         ) VALUES (
-           gen_random_uuid(), $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, NOW(), NOW()
-         ) RETURNING 
-           id, customer_number, first_name, last_name, email, phone, address,
-           customer_type, is_trial, trial_start_date, trial_end_date, created_at, updated_at`,
+          customer_number, first_name, last_name, email, phone, address, 
+          customer_type, is_trial, trial_start_date, trial_end_date, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
+        RETURNING 
+          id, customer_number, first_name, last_name, email, phone, 
+          address, customer_type, is_trial, trial_start_date, trial_end_date,
+          created_at, updated_at`,
         [
           customerNumber,
           customerData.first_name,
@@ -245,8 +252,8 @@ export class CustomerHybridService {
           JSON.stringify(customerData.address),
           customerData.customer_type || 'individual',
           customerData.is_trial || false,
-          customerData.trial_start_date || null,
-          customerData.trial_end_date || null
+          trialStartDate,
+          trialEndDate
         ]
       );
 
@@ -255,71 +262,10 @@ export class CustomerHybridService {
       }
 
       return this.mapRowToCustomer(result.rows[0]);
-    } catch (error: any) {
-      console.error('Error creating customer directly:', error);
-      
-      // If database creation fails, fallback to onboarding service
-      console.log('Falling back to onboarding service...');
-      return await this.createCustomerViaOnboarding(customerData);
+    } catch (error) {
+      console.error('Error creating customer:', error);
+      throw new Error('Failed to create customer');
     }
-  }
-
-  // Fallback method to create customer via onboarding service
-  private async createCustomerViaOnboarding(customerData: CreateCustomerData): Promise<Customer> {
-    const customPath = process.env.ONBOARDING_CUSTOMER_CREATE_PATH;
-    const candidates = [
-      customPath || '/api/onboarding/customers'
-    ];
-
-    const headers = { 'Content-Type': 'application/json' } as Record<string, string>;
-
-    let lastError: any = null;
-    for (const path of candidates) {
-      const url = this.buildUrl(path);
-      try {
-        const response = await axios.post(url, customerData, { headers, timeout: 15000 });
-        if (response.status >= 200 && response.status < 300 && response.data?.success !== false) {
-          return response.data.data ?? response.data;
-        }
-        lastError = new Error(response.data?.error?.message || `Unexpected response from ${url}`);
-      } catch (error: any) {
-        // Retry once on 502/503 (Render cold start / routing)
-        const status = error?.response?.status;
-        if (status === 502 || status === 503) {
-          try {
-            await new Promise(r => setTimeout(r, 800));
-            const retryResp = await axios.post(url, customerData, { headers, timeout: 15000 });
-            if (retryResp.status >= 200 && retryResp.status < 300 && retryResp.data?.success !== false) {
-              return retryResp.data.data ?? retryResp.data;
-            }
-          } catch (retryErr: any) {
-            lastError = retryErr;
-          }
-        } else if (status === 404) {
-          lastError = new Error('Onboarding service endpoint not found');
-          continue; // try next candidate
-        } else {
-          lastError = error;
-          break; // non-retryable
-        }
-      }
-    }
-
-    console.error('Error creating customer via onboarding service:', lastError);
-
-    if (lastError?.code === 'ECONNREFUSED') {
-      throw new Error('Onboarding service is not available. Please try again later.');
-    }
-    if (lastError?.response?.status === 400) {
-      throw new Error(lastError.response.data?.error?.message || 'Invalid customer data');
-    }
-    if (lastError?.response?.status === 500) {
-      throw new Error('Onboarding service error. Please try again later.');
-    }
-    if (lastError?.message === 'Onboarding service endpoint not found') {
-      throw lastError;
-    }
-    throw new Error('Failed to create customer');
   }
 
   // Update customer (handled by main server)

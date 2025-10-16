@@ -9,13 +9,14 @@ dotenv.config();
 const useSSL = process.env.POSTGRES_SSL === 'true';
 
 const pgPool = new Pool({
-  host: process.env.POSTGRES_HOST ,
-  port: parseInt(process.env.POSTGRES_PORT ),
-  database: process.env.POSTGRES_DB ,
+  host: process.env.POSTGRES_HOST,
+  port: parseInt(process.env.POSTGRES_PORT as string),
+  database: process.env.POSTGRES_DB,
   user: process.env.POSTGRES_USER,
   password: process.env.POSTGRES_PASSWORD,
-  ssl: useSSL ? { rejectUnauthorized: false } : undefined,
+  ssl: useSSL ? { rejectUnauthorized: false } : false, // ✅ fixed here
 });
+
 
 // Handle ESM: __dirname is not defined by default
 const __filename = fileURLToPath(import.meta.url);
@@ -26,7 +27,7 @@ async function tableExists(tableName: string): Promise<boolean> {
     `SELECT 1 FROM information_schema.tables WHERE table_name = $1 LIMIT 1`,
     [tableName]
   );
-  return res.rowCount > 0;
+  return res.rowCount && res.rowCount > 0;
 }
 
 async function runMigrations() {

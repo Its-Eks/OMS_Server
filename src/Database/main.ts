@@ -12,12 +12,12 @@ const { Pool } = pkg;
 
 const useSSL = process.env.POSTGRES_SSL === 'true';
 
-// console.log('[Postgres Config]');
-// console.log('  HOST:', process.env.POSTGRES_HOST);
-// console.log('  USER:', process.env.POSTGRES_USER);
-// console.log('  DATABASE:', process.env.POSTGRES_DB);
-// console.log('  PORT:', process.env.POSTGRES_PORT);
-// console.log('  SSL:', useSSL);
+console.log('[Postgres Config]');
+console.log('  HOST:', process.env.POSTGRES_HOST);
+console.log('  USER:', process.env.POSTGRES_USER);
+console.log('  DATABASE:', process.env.POSTGRES_DB);
+console.log('  PORT:', process.env.POSTGRES_PORT);
+console.log('  SSL:', useSSL);
 
 export const pgPool = new Pool({
   host: process.env.POSTGRES_HOST,
@@ -25,7 +25,9 @@ export const pgPool = new Pool({
   password: process.env.POSTGRES_PASSWORD,
   database: process.env.POSTGRES_DB,
   port: parseInt(process.env.POSTGRES_PORT, 10),
-  ssl: useSSL ? { rejectUnauthorized: false } : undefined,
+  ssl: {
+    rejectUnauthorized: false, // for self-signed certs; be careful in prod
+  },
   max: 20,
   idleTimeoutMillis: 30000,
   // Increase connection acquisition timeout to avoid spurious timeouts under load

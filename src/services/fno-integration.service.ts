@@ -229,7 +229,7 @@ export class FNOService {
         try {
           const { NotificationService } = await import('./notification.service.ts');
           const notif = new NotificationService(this.mongo);
-          await notif.emitEvent({ type: 'fno_submit_manual', userId: String(order.created_by || 'system'), metadata: { orderId, fnoId } });
+          await notif.emitEvent({ type: 'fno_submit_manual', userId: String(order.created_by || null), metadata: { orderId, fnoId } });
         } catch {}
 
         await client.query('COMMIT');
@@ -262,7 +262,7 @@ export class FNOService {
       try {
         const { NotificationService } = await import('./notification.service.ts');
         const notif = new NotificationService(this.mongo);
-        await notif.emitEvent({ type: 'fno_submit_api', userId: String(order.created_by || 'system'), metadata: { orderId, fnoId, reference: simulatedResponse.body.reference } });
+        await notif.emitEvent({ type: 'fno_submit_api', userId: String(order.created_by || null), metadata: { orderId, fnoId, reference: simulatedResponse.body.reference } });
       } catch {}
 
       // Advance order state for API submissions after reference is captured

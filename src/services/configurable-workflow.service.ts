@@ -523,19 +523,19 @@ export class ConfigurableWorkflowService {
     return (result.rows[0] as unknown as WorkflowInstance) || null;
   }
 
-  private async recordExecutionHistory(
+  private   async recordExecutionHistory(
     instanceId: string,
     fromStateId: string | null,
     toStateId: string,
     transitionId: string | null,
-    executedBy: string,
+    executedBy: string | null, // Changed to allow NULL for system actions
     reason: string,
     executionData: any,
     durationSeconds?: number | null
   ): Promise<void> {
     const duration = typeof durationSeconds === 'number' ? durationSeconds : null;
     await this.db.query(
-      `INSERT INTO workflow_execution_history 
+      `INSERT INTO workflow_execution_history
        (instance_id, from_state_id, to_state_id, transition_id, executed_by, execution_reason, execution_data, executed_at, duration_seconds)
        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8)`,
       [instanceId, fromStateId, toStateId, transitionId, executedBy, reason, executionData, duration]

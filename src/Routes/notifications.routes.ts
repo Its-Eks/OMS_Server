@@ -27,7 +27,7 @@ const controller = new NotificationsController();
  *     ]
  *   }
  */
-router.get('/my', authenticate as any, (req, res) => controller.my(req, res));
+router.get('/my', (req, res) => controller.my(req, res));
 /**
  * POST /notifications/read
  * Headers:

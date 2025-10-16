@@ -13,7 +13,16 @@ CREATE TABLE IF NOT EXISTS user_setup_tokens (
 );
 
 -- Add unique constraint on user_id (one active setup token per user)
-ALTER TABLE user_setup_tokens ADD CONSTRAINT unique_user_setup_token UNIQUE (user_id);
+DO $$ 
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints 
+        WHERE constraint_name = 'unique_user_setup_token' 
+        AND table_name = 'user_setup_tokens'
+    ) THEN
+        ALTER TABLE user_setup_tokens ADD CONSTRAINT unique_user_setup_token UNIQUE (user_id);
+    END IF;
+END $$;
 
 -- Add indexes for performance
 CREATE INDEX IF NOT EXISTS idx_user_setup_tokens_token ON user_setup_tokens(token);

@@ -15,6 +15,9 @@ export interface Order {
   createdAt: Date;
   updatedAt: Date;
   createdBy: string;
+  current_state?: string;
+  service_type?: string;
+  service_package?: string;
 }
 
 export interface Address {
@@ -35,6 +38,7 @@ export interface ServiceDetails {
   installationType: 'self_install' | 'professional_install';
   equipment?: string[];
   specialRequirements?: string;
+  service_type?: string;
 }
 
 export type OrderStatus = 

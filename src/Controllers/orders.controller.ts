@@ -45,12 +45,23 @@ export async function getOrders(req: Request, res: Response) {
       return res.json(cached);
     }
 
+    // Check if is_paid column exists before including it in the query
+    const columnCheck = await db.query(`
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_name = 'orders' AND column_name = 'is_paid'
+    `);
+    const hasIsPaidColumn = columnCheck.rows.length > 0;
+
+    // Dynamic query based on available columns
+    const isPaidSelect = hasIsPaidColumn ? 'o.is_paid,' : 'false as is_paid,';
+    
     // Get orders with all necessary fields for the frontend
     const result = await db.query(`
       SELECT o.id, o.order_number, o.customer_id, o.order_type, o.service_type, o.status as current_state, 
              o.priority, o.installation_address as service_address, o.service_package, o.service_details,
              o.fno_id, o.fno_reference, o.created_at, o.updated_at, o.estimated_completion,
-             o.is_paid, c.first_name, c.last_name, c.email as customer_email,
+             ${isPaidSelect} c.first_name, c.last_name, c.email as customer_email,
              f.name as fno_name, f.code as fno_code
       FROM orders o
       LEFT JOIN customers c ON c.id = o.customer_id
@@ -104,13 +115,21 @@ export async function getOrders(req: Request, res: Response) {
 export async function createOrder(req: Request, res: Response) {
   const redis = req.app.get('redis');
   try {
+    console.log(`[CREATE ORDER] ===== STARTING ORDER CREATION =====`);
+    console.log(`[CREATE ORDER] Request body:`, req.body);
+    
     const service = makeOrdersService(req);
-
-    const createdBy = (req as any).user?.userId || 'system';
+    const createdBy = (req as any).user?.userId || null; // Use NULL for system actions
     const payload = req.body || {};
+
+    console.log(`[CREATE ORDER] Created by: ${createdBy}`);
+    console.log(`[CREATE ORDER] Customer ID: ${payload.customerId || payload.customer_id}`);
 
     const normalizedServiceAddress = payload.serviceAddress || payload.service_address || payload.installation_address || {};
     const normalizedServiceDetails = payload.serviceDetails || payload.service_details || {};
+
+    console.log(`[CREATE ORDER] Service address:`, normalizedServiceAddress);
+    console.log(`[CREATE ORDER] Service details:`, normalizedServiceDetails);
 
     const order = await service.createOrder(
       {
@@ -124,9 +143,15 @@ export async function createOrder(req: Request, res: Response) {
           installationType: normalizedServiceDetails.installationType || normalizedServiceDetails.installation_type || payload.installation_type || 'professional_install',
           equipment: normalizedServiceDetails.equipment || payload.equipment
         },
+        // Add service_type for trial detection
+        serviceType: payload.service_type || normalizedServiceDetails.serviceType || normalizedServiceDetails.service_type || 'internet',
       },
       createdBy
     );
+
+    console.log(`[CREATE ORDER] Order created successfully: ${order.id}`);
+    console.log(`[CREATE ORDER] Order status: ${order.status}`);
+    console.log(`[CREATE ORDER] Order current_state: ${order.current_state}`);
 
     // Re-read with standard normalization so response fields are complete/consistent
     const normalized = await service.getOrder(order.id);
@@ -160,6 +185,11 @@ export async function createOrder(req: Request, res: Response) {
 
     res.status(201).json({ success: true, orderId: order.id, order: normalized });
   } catch (error: any) {
+    console.error(`[CREATE ORDER] ===== ERROR =====`);
+    console.error(`[CREATE ORDER] Error details:`, error);
+    console.error(`[CREATE ORDER] Error message:`, error.message);
+    console.error(`[CREATE ORDER] Error stack:`, error.stack);
+    console.error(`[CREATE ORDER] ===== ERROR END =====`);
     res.status(500).json({ success: false, error: { message: error.message } });
   }
 }
@@ -210,7 +240,7 @@ export async function updateOrder(req: Request, res: Response) {
 
     if (before && before.status === 'validated' && touchedEnrichment) {
       try {
-        await service.transitionToEnrichedInternal(orderId, (req as any).user?.userId || 'system', 'Order enriched via enrichment form');
+        await service.transitionToEnrichedInternal(orderId, String((req as any).user?.userId || null), 'Order enriched via enrichment form');
         const after = await service.getOrder(orderId);
         // Invalidate caches after transition
         try {
@@ -230,7 +260,7 @@ export async function updateOrder(req: Request, res: Response) {
     const touchedFno = Boolean(payload.fnoId || payload.fno_id || payload.fnoReference || payload.fno_reference);
     if (before && before.status === 'enriched' && touchedFno) {
       try {
-        await service.transitionOrder(orderId, 'fno_submitted' as any, (req as any).user?.userId || 'system', 'Submitted to FNO via submission form');
+        await service.transitionOrder(orderId, 'fno_submitted' as any, String((req as any).user?.userId || null), 'Submitted to FNO via submission form');
         const after = await service.getOrder(orderId);
         // Invalidate caches after transition
         try {
@@ -344,4 +374,52 @@ export async function qualifyFiber(req: Request, res: Response) {
 
 export async function qualifyWireless(req: Request, res: Response) {
   return qualifyOrderAsTrial(req, res, 'wireless');
+}
+
+// Get order workflow state
+export async function getOrderWorkflowState(req: Request, res: Response) {
+  console.log(`[CONTROLLER GET WORKFLOW STATE] ===== STARTING =====`);
+  console.log(`[CONTROLLER GET WORKFLOW STATE] Order ID: ${req.params.id}`);
+  
+  try {
+    const svc = makeOrdersService(req);
+    const orderId = String(req.params.id || '');
+    
+    if (!orderId) {
+      console.log(`[CONTROLLER GET WORKFLOW STATE] No order ID provided`);
+      return res.status(400).json({ success: false, error: { message: 'Order ID is required' } });
+    }
+    
+    console.log(`[CONTROLLER GET WORKFLOW STATE] Calling service.getOrderWorkflowState for: ${orderId}`);
+    const result = await svc.getOrderWorkflowState(orderId);
+    console.log(`[CONTROLLER GET WORKFLOW STATE] Service result:`, result);
+    
+    const response = { success: true, data: result };
+    console.log(`[CONTROLLER GET WORKFLOW STATE] Sending response:`, response);
+    console.log(`[CONTROLLER GET WORKFLOW STATE] ===== COMPLETED =====`);
+    
+    res.json(response);
+  } catch (error: any) {
+    console.error(`[CONTROLLER GET WORKFLOW STATE] ===== ERROR =====`);
+    console.error(`[CONTROLLER GET WORKFLOW STATE] Error details:`, error);
+    console.error(`[CONTROLLER GET WORKFLOW STATE] ===== ERROR END =====`);
+    res.status(500).json({ success: false, error: { message: error.message } });
+  }
+}
+
+// Get order history
+export async function getOrderHistory(req: Request, res: Response) {
+  try {
+    const svc = makeOrdersService(req);
+    const orderId = String(req.params.id || '');
+    
+    if (!orderId) {
+      return res.status(400).json({ success: false, error: { message: 'Order ID is required' } });
+    }
+    
+    const result = await svc.getOrderHistory(orderId);
+    res.json({ success: true, data: result });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: { message: error.message } });
+  }
 }
