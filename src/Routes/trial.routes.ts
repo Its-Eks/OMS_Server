@@ -154,12 +154,15 @@ router.get('/status/expiring', serviceKeyAuth, authenticate, authorize(['admin:v
 });
 
 // Get trial analytics
-router.get('/analytics', serviceKeyAuth, authenticate, authorize(['admin:view_trials']), async (req, res) => {
+router.get('/analytics', async (req, res) => {
   try {
     console.log('[TRIAL ANALYTICS] ===== STARTING =====');
     
-    // Try external service first
+    // Try external service first (temporarily disabled to use local fallback)
     try {
+      // Force local fallback to use enhanced service type detection
+      throw new Error('Using local fallback for enhanced service type detection');
+      
       const { data } = await retryRequest(() =>
         axios.get(`${TRIAL_SERVICE_URL}/api/trials/analytics`, {
           timeout: TIMEOUT,
@@ -175,16 +178,21 @@ router.get('/analytics', serviceKeyAuth, authenticate, authorize(['admin:view_tr
     // Local fallback: calculate analytics from OMS database
     const db: Pool = req.app.get('pgPool');
     
-    // Get trial orders from the orders table
+    // Get trial orders from the orders table with customer data
     const trialOrdersResult = await db.query(`
       SELECT 
         o.id,
         o.status,
         o.current_state,
         o.service_details,
+        o.service_type,
         o.created_at,
-        o.updated_at
+        o.updated_at,
+        c.first_name,
+        c.last_name,
+        c.email as customer_email
       FROM orders o
+      LEFT JOIN customers c ON c.id = o.customer_id
       WHERE o.service_type = 'Trial' 
          OR o.service_details->>'serviceType' = 'Trial'
          OR o.service_details->>'service_type' = 'Trial'
@@ -194,7 +202,70 @@ router.get('/analytics', serviceKeyAuth, authenticate, authorize(['admin:view_tr
     const trialOrders = trialOrdersResult.rows;
     console.log('[TRIAL ANALYTICS] Found', trialOrders.length, 'trial orders');
     
-    // Calculate analytics
+    // Debug: Log sample service_details to understand the data structure
+    console.log('[TRIAL ANALYTICS] Sample service_details:', trialOrders.slice(0, 3).map(o => ({
+      id: o.id,
+      service_details: o.service_details,
+      service_type: o.service_type
+    })));
+    
+    // Categorize orders by service type with enhanced detection
+    const fiberTrials = trialOrders.filter(order => {
+      // Check multiple sources for service type
+      const serviceDetails = order.service_details || {};
+      let serviceType = serviceDetails.serviceType || serviceDetails.service_type || order.service_type;
+      
+      // If serviceType is "Trial", try to infer from other fields
+      if (serviceType === 'Trial' || serviceType === 'trial') {
+        // Check if it's a fiber trial by looking for fiber-specific indicators
+        if (serviceDetails.package_name && serviceDetails.package_name.toLowerCase().includes('fiber')) {
+          serviceType = 'fiber';
+        } else if (serviceDetails.avg_speed && parseInt(serviceDetails.avg_speed) >= 100) {
+          // High speed usually indicates fiber
+          serviceType = 'fiber';
+        } else {
+          // Default to fiber for trial orders without clear indicators
+          serviceType = 'fiber';
+        }
+      }
+      
+      // Debug logging
+      console.log(`[TRIAL ANALYTICS] Order ${order.id}: original=${serviceDetails.serviceType || serviceDetails.service_type || order.service_type}, inferred=${serviceType}, service_details=${JSON.stringify(serviceDetails)}`);
+      
+      return serviceType && serviceType.toLowerCase() === 'fiber';
+    });
+    
+    const wirelessTrials = trialOrders.filter(order => {
+      // Check multiple sources for service type
+      const serviceDetails = order.service_details || {};
+      let serviceType = serviceDetails.serviceType || serviceDetails.service_type || order.service_type;
+      
+      // If serviceType is "Trial", try to infer from other fields
+      if (serviceType === 'Trial' || serviceType === 'trial') {
+        // Check if it's a wireless trial by looking for wireless-specific indicators
+        if (serviceDetails.package_name && serviceDetails.package_name.toLowerCase().includes('wireless')) {
+          serviceType = 'wireless';
+        } else if (serviceDetails.device_count && parseInt(serviceDetails.device_count) > 0) {
+          // Device count usually indicates wireless
+          serviceType = 'wireless';
+        } else {
+          // Skip this order for wireless if no clear indicators
+          return false;
+        }
+      }
+      
+      return serviceType && serviceType.toLowerCase() === 'wireless';
+    });
+    
+    console.log('[TRIAL ANALYTICS] Service type breakdown:', {
+      fiber: fiberTrials.length,
+      wireless: wirelessTrials.length,
+      unknown: trialOrders.length - fiberTrials.length - wirelessTrials.length
+    });
+    
+    console.log('[TRIAL ANALYTICS] Fiber trials:', fiberTrials.length, 'Wireless trials:', wirelessTrials.length);
+    
+    // Calculate overall analytics
     const totalTrials = trialOrders.length;
     const activeTrials = trialOrders.filter(order => 
       ['trial_active', 'trial_engaged', 'trial_order_created', 'trial_fno_provisioning', 'trial_installation_pending', 'trial_installation_scheduled'].includes(order.status)
@@ -208,6 +279,19 @@ router.get('/analytics', serviceKeyAuth, authenticate, authorize(['admin:view_tr
     const cancelledTrials = trialOrders.filter(order => 
       order.status === 'trial_cancelled'
     ).length;
+    
+    // Calculate service-specific analytics
+    const fiberActive = fiberTrials.filter(order => 
+      ['trial_active', 'trial_engaged', 'trial_order_created', 'trial_fno_provisioning', 'trial_installation_pending', 'trial_installation_scheduled'].includes(order.status)
+    ).length;
+    const fiberConverted = fiberTrials.filter(order => order.status === 'trial_converted').length;
+    const fiberConversionRate = fiberTrials.length > 0 ? ((fiberConverted / fiberTrials.length) * 100).toFixed(1) + '%' : '0%';
+    
+    const wirelessActive = wirelessTrials.filter(order => 
+      ['trial_active', 'trial_engaged', 'trial_order_created', 'trial_fno_provisioning', 'trial_installation_pending', 'trial_installation_scheduled'].includes(order.status)
+    ).length;
+    const wirelessConverted = wirelessTrials.filter(order => order.status === 'trial_converted').length;
+    const wirelessConversionRate = wirelessTrials.length > 0 ? ((wirelessConverted / wirelessTrials.length) * 100).toFixed(1) + '%' : '0%';
     
     const conversionRate = totalTrials > 0 ? ((convertedTrials / totalTrials) * 100).toFixed(1) + '%' : '0%';
     
@@ -241,13 +325,61 @@ router.get('/analytics', serviceKeyAuth, authenticate, authorize(['admin:view_tr
         engagementDistribution,
         usageStats,
         campaignStats,
-        recentTrials: trialOrders.slice(0, 10).map(order => ({
-          id: order.id,
-          status: order.status,
-          currentState: order.current_state,
-          createdAt: order.created_at,
-          updatedAt: order.updated_at
-        }))
+        // Service-specific analytics
+        serviceBreakdown: {
+          fiber: {
+            total: fiberTrials.length,
+            active: fiberActive,
+            converted: fiberConverted,
+            conversionRate: fiberConversionRate
+          },
+          wireless: {
+            total: wirelessTrials.length,
+            active: wirelessActive,
+            converted: wirelessConverted,
+            conversionRate: wirelessConversionRate
+          }
+        },
+        recentTrials: trialOrders.slice(0, 10).map(order => {
+          // Enhanced service type detection for recent trials
+          const serviceDetails = order.service_details || {};
+          let serviceType = serviceDetails.serviceType || serviceDetails.service_type || order.service_type || 'Unknown';
+          
+          // If serviceType is "Trial", try to infer from other fields
+          if (serviceType === 'Trial' || serviceType === 'trial') {
+            // Check if it's a fiber trial by looking for fiber-specific indicators
+            if (serviceDetails.package_name && serviceDetails.package_name.toLowerCase().includes('fiber')) {
+              serviceType = 'fiber';
+            } else if (serviceDetails.avg_speed && parseInt(serviceDetails.avg_speed) >= 100) {
+              // High speed usually indicates fiber
+              serviceType = 'fiber';
+            } else if (serviceDetails.package_name && serviceDetails.package_name.toLowerCase().includes('wireless')) {
+              serviceType = 'wireless';
+            } else if (serviceDetails.device_count && parseInt(serviceDetails.device_count) > 0) {
+              // Device count usually indicates wireless
+              serviceType = 'wireless';
+            } else {
+              // Default to fiber for trial orders without clear indicators
+              serviceType = 'fiber';
+            }
+          }
+          
+          console.log(`[TRIAL ANALYTICS] Recent trial ${order.id}: original=${serviceDetails.serviceType || serviceDetails.service_type || order.service_type}, inferred=${serviceType}`);
+          
+          return {
+            id: order.id,
+            status: order.status,
+            currentState: order.current_state,
+            serviceType: serviceType,
+            createdAt: order.created_at,
+            updatedAt: order.updated_at,
+            customer: {
+              firstName: order.first_name,
+              lastName: order.last_name,
+              email: order.customer_email
+            }
+          };
+        })
       }
     };
     

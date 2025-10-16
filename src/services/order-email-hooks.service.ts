@@ -35,7 +35,7 @@ export class OrderEmailHooksService {
   }> {
     try {
       console.log(`[order-email-hooks] Processing status change for order ${event.orderNumber}: ${event.previousStatus} → ${event.newStatus}`);
-
+  
       // Check if we should send an email for this status change
       const shouldSendEmail = this.shouldSendEmailForStatus(event.orderType, event.newStatus);
       
@@ -43,13 +43,13 @@ export class OrderEmailHooksService {
         console.log(`[order-email-hooks] No email template configured for ${event.orderType}:${event.newStatus}`);
         return { success: true, emailSent: false };
       }
-
+  
       // Enrich order data with additional information from database
       const enrichedOrderData = await this.enrichOrderData(event.orderId, event.orderData);
-
+  
       // Build template data
       const templateData = this.buildTemplateData(event, enrichedOrderData);
-
+  
       // Send the email using the templates service
       const result = await this.templatesService.sendOrderEmail(
         event.orderType,
@@ -57,12 +57,20 @@ export class OrderEmailHooksService {
         event.customerEmail,
         templateData
       );
-
+  
       if (result.success) {
         console.log(`[order-email-hooks] ✅ Email sent for order ${event.orderNumber} using template ${result.templateUsed}`);
         
         // Log the email activity in the database
-        await this.logEmailActivity(event.orderId, result.templateUsed!, event.customerEmail, result.emailData);
+        await this.logEmailActivity(
+          event.orderId, 
+          result.templateUsed!, 
+          event.customerEmail, 
+          {
+            subject: result.emailData?.subject || `Order Status Update - ${event.orderNumber}`,
+            ...result.emailData
+          }
+        );
         
         return {
           success: true,
@@ -77,7 +85,7 @@ export class OrderEmailHooksService {
           error: result.error
         };
       }
-
+  
     } catch (error: any) {
       console.error(`[order-email-hooks] ❌ Error processing order status change:`, error);
       return {
