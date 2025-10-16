@@ -62,7 +62,7 @@ export class OrderEmailHooksService {
         console.log(`[order-email-hooks] ✅ Email sent for order ${event.orderNumber} using template ${result.templateUsed}`);
         
         // Log the email activity in the database
-        await this.logEmailActivity(event.orderId, result.templateUsed!, event.customerEmail);
+        await this.logEmailActivity(event.orderId, result.templateUsed!, event.customerEmail, result.emailData);
         
         return {
           success: true,
@@ -99,7 +99,29 @@ export class OrderEmailHooksService {
         'ready_to_install',  // Ready for installation
         'in_progress',       // Installation in progress
         'activated',         // Service activated
-        'completed'          // Installation complete
+        'completed',         // Installation complete
+        // Trial workflow states
+        'trial_order_created',
+        'trial_fno_provisioning',
+        'trial_installation_pending',
+        'trial_installation_scheduled',
+        'trial_active',
+        'trial_engaged',
+        'trial_expiring',
+        'trial_converted',
+        'trial_expired',
+        'trial_cancelled',
+        // Wireless trial states
+        'trial_device_shipping',
+        'trial_device_delivered',
+        'trial_self_install',
+        // Paid service states
+        'paid_service_installation_pending',
+        'paid_service_installation_scheduled',
+        'paid_service_active',
+        'paid_service_device_shipping',
+        'paid_service_device_delivered',
+        'paid_service_self_install'
       ],
       'service_change': [
         'pending',           // Change request received
@@ -186,7 +208,7 @@ export class OrderEmailHooksService {
       orderNumber: event.orderNumber || enrichedData.order_number || event.orderId,
       customerName: event.customerName || enrichedData.customer_name || enrichedData.first_name || 'Valued Customer',
       customerEmail: event.customerEmail || enrichedData.customer_email,
-      serviceType: enrichedData.service_type || enrichedData.package_name || 'Internet Service',
+      serviceType: enrichedData.service_details?.serviceType || enrichedData.service_details?.service_type || enrichedData.service_type || enrichedData.package_name || 'Internet Service',
       
       // Address information
       address: enrichedData.installation_address || enrichedData.customer_address || enrichedData.address || '',
@@ -313,23 +335,27 @@ export class OrderEmailHooksService {
   /**
    * Log email activity to the database for tracking
    */
-  private async logEmailActivity(orderId: string, templateKey: string, recipientEmail: string): Promise<void> {
+  private async logEmailActivity(orderId: string, templateKey: string, recipientEmail: string, emailData?: any): Promise<void> {
     try {
       const logQuery = `
         INSERT INTO order_email_log (
           order_id, 
+          email_type,
           template_key, 
           recipient_email, 
+          subject,
           sent_at, 
           status
-        ) VALUES ($1, $2, $3, $4, $5)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
         ON CONFLICT DO NOTHING
       `;
       
       await this.db.query(logQuery, [
         orderId,
+        'status_change', // Default email type for status change emails
         templateKey,
         recipientEmail,
+        emailData.subject || 'No Subject', // Include subject from email data
         new Date(),
         'sent'
       ]);
@@ -347,14 +373,17 @@ export class OrderEmailHooksService {
       // Create email log table if it doesn't exist
       const createTableQuery = `
         CREATE TABLE IF NOT EXISTS order_email_log (
-          id SERIAL PRIMARY KEY,
-          order_id UUID NOT NULL,
-          template_key VARCHAR(255) NOT NULL,
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          order_id UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+          email_type VARCHAR(100) NOT NULL,
           recipient_email VARCHAR(255) NOT NULL,
+          subject TEXT NOT NULL,
+          template_key VARCHAR(255),
           sent_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
           status VARCHAR(50) DEFAULT 'sent',
+          error_message TEXT,
           created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-          UNIQUE(order_id, template_key, recipient_email)
+          updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
         );
         
         CREATE INDEX IF NOT EXISTS idx_order_email_log_order_id ON order_email_log(order_id);

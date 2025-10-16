@@ -151,8 +151,18 @@ export class CustomerHybridController {
         return;
       }
 
-      // Validate address structure
+      // Validate and normalize address structure
       if (customerData.address) {
+        // Normalize address fields - handle both 'state' and 'province'
+        if (customerData.address.province && !customerData.address.state) {
+          customerData.address.state = customerData.address.province;
+        }
+        
+        // Set default country if not provided
+        if (!customerData.address.country) {
+          customerData.address.country = 'South Africa';
+        }
+        
         const addressFields = ['street', 'city', 'state', 'postal_code', 'country'] as const;
         const missingAddressFields = addressFields.filter(field => !(customerData.address as any)[field]);
         

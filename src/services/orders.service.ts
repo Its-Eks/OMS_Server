@@ -61,6 +61,16 @@ export class OrdersService {
     return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
   }
 
+  private async resolveActorId(preferredId: string | null | undefined): Promise<string | null> {
+    const id = (typeof preferredId === 'string' && this.isUuidLike(preferredId)) ? preferredId : null;
+    if (!id) return null;
+    try {
+      const res = await this.db.query('SELECT id FROM users WHERE id = $1 LIMIT 1', [id]);
+      if (res.rows[0]?.id) return id;
+    } catch {}
+    return null;
+  }
+
   async createOrder(orderData: any, createdBy: string): Promise<Order> {
     // Validate order data
     await this.validateOrderData(orderData);
@@ -69,7 +79,7 @@ export class OrdersService {
     const existing = await this.db.query(
       `SELECT id FROM orders 
          WHERE customer_id = $1 
-           AND status NOT IN ('completed','cancelled') 
+           AND status NOT IN ('completed','cancelled','trial_cancelled','trial_expired') 
          ORDER BY created_at DESC LIMIT 1`,
       [orderData.customerId]
     );
@@ -80,61 +90,108 @@ export class OrdersService {
     // Generate order number
     const orderNumber = await this.generateOrderNumber();
 
-    // Create order
-    const result = await this.db.query(
-      `INSERT INTO orders (
-        customer_id, order_number, service_type, service_package, 
-        installation_address, fno_id, current_state, priority, 
-        created_by, assigned_to, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
-      RETURNING *`,
-      [
-        orderData.customerId,
-        orderNumber,
-        orderData.serviceDetails?.serviceType || 'internet',
-        orderData.serviceDetails?.package || `${orderData.serviceDetails?.bandwidth || '100/50'} Mbps`,
-        JSON.stringify(orderData.serviceAddress),
-        orderData.fnoId || null,
-        'created',
-        orderData.priority || 'normal',
-        createdBy,
-        createdBy
-      ]
-    );
+    // Resolve actor (created_by/assigned_to) to avoid FK violations on fresh DBs
+    const actorId = await this.resolveActorId(createdBy ?? 'system');
+
+    // Fix: Use actual service type, not 'internet'
+    const serviceType = orderData.serviceDetails?.service_type || 
+                       orderData.serviceDetails?.serviceType || 
+                       'Fiber'; // Default to Fiber, not 'internet'
+
+// Create order
+const result = await this.db.query(
+  `INSERT INTO orders (
+    customer_id, order_number, order_type, service_type, service_package, 
+    installation_address, priority, fno_id, current_state, 
+    created_by, assigned_to, created_at, updated_at
+  ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())
+  RETURNING *`,
+  [
+    orderData.customerId,                                                    // $1 - customer_id
+    orderNumber,                                                             // $2 - order_number
+    orderData.orderType,                                                     // $3 - order_type
+    serviceType,                                                             // $4 - service_type
+    orderData.serviceDetails?.bandwidth || orderData.servicePackage || 'Basic', // $5 - service_package
+    JSON.stringify(orderData.serviceAddress),                                // $6 - installation_address
+    orderData.priority || 'normal',                                          // $7 - priority
+    orderData.fnoId || null,                                                 // $8 - fno_id
+    'created',                                                               // $9 - current_state
+    actorId,                                                                 // $10 - created_by
+    actorId                                                                  // $11 - assigned_to
+  ]
+);
 
     let order = result.rows[0];
 
-    // Check if customer is marked as trial and auto-set order as trial
+    // Check if this is a trial order (either customer is marked as trial OR order type is trial)
     const customerResult = await this.db.query(
       'SELECT is_trial FROM customers WHERE id = $1', 
       [orderData.customerId]
     );
     const customerIsTrial = customerResult.rows[0]?.is_trial;
+    const isTrialOrder = customerIsTrial || orderData.orderType === 'trial' || orderData.serviceType === 'Trial';
 
-    if (customerIsTrial) {
+    if (isTrialOrder) {
       console.log(`[orders] Customer ${orderData.customerId} is marked as trial - marking order as trial`);
       
-      // Auto-set order as trial type (but don't create trial record yet)
+      // Determine the actual service type (Fiber or Wireless) from service details
+      const actualServiceType = orderData.serviceDetails?.serviceType || 'Fiber';
+      const isFiber = actualServiceType.toLowerCase() === 'fiber';
+      const isWireless = actualServiceType.toLowerCase() === 'wireless';
+      
+      console.log(`[orders] Detected service type: ${actualServiceType} (Fiber: ${isFiber}, Wireless: ${isWireless})`);
+      
+      // Auto-set order as trial type but preserve the actual service technology
       const updatedServiceDetails = {
         ...orderData.serviceDetails,
-        serviceType: 'Trial'
+        serviceType: actualServiceType, // Keep the actual service type (Fiber/Wireless)
+        isTrial: true // Add trial flag
       };
       
-      // Update the order with trial service type
+      // Update the order with trial service type and service_type column
+      // Also update current_state and status to reflect trial workflow state
       await this.db.query(
         `UPDATE orders 
-         SET service_details = $1, updated_at = NOW()
-         WHERE id = $2`,
-        [JSON.stringify(updatedServiceDetails), order.id]
+         SET service_details = $1, service_type = $2, service_package = $3, 
+             current_state = $4, status = $5, updated_at = NOW()
+         WHERE id = $6`,
+        [JSON.stringify(updatedServiceDetails), 'Trial', 'Trial Package', 
+         'trial_order_created', 'created', order.id]
       );
       
-      console.log(`[orders] Updated order ${order.id} with trial service type - trial record will be created after FNO provisioning`);
+      console.log(`[orders] Updated order ${order.id} with trial service type - creating trial record now`);
+      
+      // Mark customer as trial if not already marked
+      if (!customerIsTrial) {
+        await this.db.query(
+          'UPDATE customers SET is_trial = true, updated_at = NOW() WHERE id = $1',
+          [orderData.customerId]
+        );
+        console.log(`[orders] Marked customer ${orderData.customerId} as trial customer`);
+      }
+      
+      // Create trial record immediately for trial orders
+      try {
+        await this.createTrialCustomer(order);
+        console.log(`[orders] Trial customer created for order ${order.id}`);
+        
+        // Synchronize order state with trial workflow state
+        // Update order to reflect trial workflow progression
+        await this.db.query(
+          `UPDATE orders 
+           SET current_state = $1, status = $2, updated_at = NOW()
+           WHERE id = $3`,
+          ['trial_order_created', 'created', order.id]
+        );
+        console.log(`[orders] Updated order ${order.id} to trial_order_created state`);
+        
+      } catch (error) {
+        console.error(`[orders] Failed to create trial customer for order ${order.id}:`, error);
+        // Don't fail the order creation if trial record creation fails
+      }
       
       // Refresh the order object to get updated service_details
       order = await this.getOrder(order.id);
-      
-      // NOTE: Trial record creation moved to FNO provisioning step
-      // This prevents premature email sending before installation
     }
 
     // Apply business policies
@@ -145,7 +202,7 @@ export class OrdersService {
     const assignedWorkflowId = await this.abTestingService.assignOrderToWorkflow(order.id, orderType);
     
     // Create workflow instance with assigned workflow
-    const workflowInstance = await this.configurableWorkflow.createWorkflowInstance(order.id, orderType, createdBy);
+    const workflowInstance = await this.configurableWorkflow.createWorkflowInstance(order.id, orderType, createdBy ?? 'system');
     
     console.log(`[orders] Created workflow instance ${workflowInstance.id} for order ${order.id} (A/B test assignment: ${assignedWorkflowId})`);
 
@@ -166,17 +223,25 @@ export class OrdersService {
       await this.ensureOnboardingForOrder(order.id, orderData.customerId, createdBy);
     } catch {}
 
+    // Add initial history record for order creation
+    try {
+      await this.addOrderHistory(order.id, 'new', 'created', 'Order created', actorId || null);
+    } catch (error) {
+      console.error('Failed to add initial order history:', error);
+    }
+
     return order;
   }
 
   async getOrder(orderId: string): Promise<Order | null> {
     const result = await this.db.query(
-      `SELECT 
+      `SELECT
          id,
          order_number AS "orderNumber",
          customer_id AS "customerId",
          order_type AS "orderType",
          status,
+         current_state,
          priority,
          installation_address AS "serviceAddress",
          service_details AS "serviceDetails",
@@ -264,6 +329,14 @@ export class OrdersService {
       throw new Error('Order not found');
     }
 
+    // Enforce distinct workflow for Trial orders: do not allow installation_scheduled
+    if (String(newStatus).toLowerCase() === 'installation_scheduled') {
+      const serviceType = String((order as any)?.serviceDetails?.serviceType || '').toLowerCase();
+      if (serviceType === 'trial') {
+        throw new Error('installation_scheduled is not applicable to trial orders');
+      }
+    }
+
     // Business rule: 'enriched' transitions must be triggered by enrichment flow, not direct status update
     if (newStatus === 'enriched') {
       throw new Error('Order must be enriched via the Enrichment tab');
@@ -309,7 +382,7 @@ export class OrdersService {
         }
       }
 
-    const executedBy = this.isUuidLike(changedBy) ? (changedBy as string) : null;
+    const executedBy = changedBy || null; // Allow NULL for system actions
     await this.configurableWorkflow.executeTransition(
         workflowInstance.id,
         targetStateId,
@@ -339,6 +412,13 @@ export class OrdersService {
       }
 
       console.log(`[orders] Executed workflow transition for order ${orderId} to ${newStatus}`);
+      
+      // Record history for workflow transition
+      try {
+        await this.addOrderHistory(orderId, order.status, newStatus, changeReason || 'Order status transitioned', changedBy);
+      } catch (error) {
+        console.error('Failed to record order history:', error);
+      }
     } else {
       // Fallback to legacy workflow engine
     const updatedOrder = await this.workflowEngine.transitionOrder(order, newStatus);
@@ -348,6 +428,13 @@ export class OrdersService {
       'UPDATE orders SET status = $1::text, current_state = $1::text, updated_at = NOW() WHERE id = $2::uuid',
       [newStatus, orderId]
     );
+    
+    // Record history for legacy workflow transition
+    try {
+      await this.addOrderHistory(orderId, order.status, newStatus, changeReason || 'Order status transitioned', changedBy);
+    } catch (error) {
+      console.error('Failed to record order history:', error);
+    }
 
       console.log(`[orders] Used legacy workflow for order ${orderId} to ${newStatus}`);
     }
@@ -374,7 +461,7 @@ export class OrdersService {
     await this.handleStatusTransition(after);
     // If order reached validated, ensure onboarding exists (customer + order anchored)
     if ((after as any).status === 'validated') {
-      await this.ensureOnboardingForOrder(after.id, (after as any).customerId, changedBy || 'system');
+      await this.ensureOnboardingForOrder(after.id, (after as any).customerId, changedBy || null);
     }
     // Sync onboarding progression with order status per PRD mapping and order type
     await this.syncOnboardingForOrder(after);
@@ -414,7 +501,7 @@ export class OrdersService {
       await this.configurableWorkflow.executeTransition(
         workflowInstance.id,
         targetStateId,
-        changedBy || 'system',
+        changedBy || null, // Use NULL for system actions
         changeReason || `Transition to ${targetStatus} (enrichment)`,
         { enrichment: true }
       );
@@ -580,8 +667,31 @@ export class OrdersService {
 
   private async generateOrderNumber(): Promise<string> {
     const prefix = 'ORD';
-    const random = Math.floor(Math.random() * 100000).toString().padStart(5, '0');
-    return `${prefix}-${random}`;
+    let attempts = 0;
+    const maxAttempts = 10;
+    
+    while (attempts < maxAttempts) {
+        const random = Math.floor(Math.random() * 100000).toString().padStart(5, '0');
+      const orderNumber = `${prefix}-${random}`;
+      
+      // Check if order number already exists
+      const existing = await this.db.query(
+        'SELECT id FROM orders WHERE order_number = $1 LIMIT 1',
+        [orderNumber]
+      );
+      
+      if (existing.rows.length === 0) {
+        return orderNumber;
+      }
+      
+      attempts++;
+      // Add small delay to ensure different timestamp
+      await new Promise(resolve => setTimeout(resolve, 1));
+    }
+    
+    // Fallback: use UUID if we can't generate a unique timestamp-based number
+    const uuid = require('crypto').randomUUID().substr(0, 8).toUpperCase();
+    return `${prefix}-${uuid}`;
   }
 
   private async applyOrderPolicies(order: Order): Promise<void> {
@@ -932,10 +1042,6 @@ export class OrdersService {
     return await this.configurableWorkflow.getExecutionHistory(workflowInstance.id);
   }
 
-  // Get current workflow state for an order
-  async getOrderWorkflowState(orderId: string): Promise<string | null> {
-    return await this.configurableWorkflow.getCurrentStateName(orderId);
-  }
 
   // Record workflow metric for A/B testing
   async recordWorkflowMetric(orderId: string, metricName: string, value: number, unit?: string, context?: any): Promise<void> {
@@ -1018,13 +1124,19 @@ export class OrdersService {
       console.log(`[orders] Creating trial customer for order ${order.id}`);
       
       // Get customer details for trial creation (including name)
+      const customerId = order.customer_id || order.customerId;
+      if (!customerId) {
+        console.error(`[orders] No customer ID found in order object:`, Object.keys(order));
+        return;
+      }
+
       const customerResult = await this.db.query(
         'SELECT email, phone, first_name, last_name FROM customers WHERE id = $1',
-        [order.customer_id]
+        [customerId]
       );
 
       if (customerResult.rows.length === 0) {
-        console.error(`[orders] Customer not found for trial creation: ${order.customer_id}`);
+        console.error(`[orders] Customer not found for trial creation: ${customerId}`);
         return;
       }
 
@@ -1034,17 +1146,37 @@ export class OrdersService {
 
       console.log(`[orders] Calling trial service at ${trialServiceUrl}/api/internal/trials`);
 
+      // Get the service details and current state from the order
+      const orderResult = await this.db.query(
+        'SELECT service_details, current_state, status FROM orders WHERE id = $1',
+        [order.id]
+      );
+      const serviceDetails = orderResult.rows[0]?.service_details || {};
+      const currentState = orderResult.rows[0]?.current_state || 'trial_order_created';
+      const status = orderResult.rows[0]?.status || 'created';
+      
+      console.log(`[orders] Trial creation - Order service details:`, serviceDetails);
+      console.log(`[orders] Trial creation - Service type from serviceDetails.serviceType:`, serviceDetails.serviceType);
+      console.log(`[orders] Trial creation - Service type from serviceDetails.service_type:`, serviceDetails.service_type);
+      
       const response = await axios.post(
         `${trialServiceUrl}/api/internal/trials`,
         {
-          customerId: order.customer_id,
+          customerId: customerId,
           orderId: order.id,
           email: customer.email,
           phone: customer.phone || '',
+          serviceType: serviceDetails.serviceType || serviceDetails.service_type || 'Fiber', // Pass the actual service type
+          orderData: {
+            current_state: currentState,
+            status: status,
+            service_details: serviceDetails
+          },
           metadata: {
             name: customerName,
             firstName: customer.first_name,
-            lastName: customer.last_name
+            lastName: customer.last_name,
+            serviceType: serviceDetails.serviceType || serviceDetails.service_type || 'Fiber'
           }
         },
         {
@@ -1106,6 +1238,113 @@ export class OrdersService {
       } catch (fallbackError) {
         console.error('[orders] Fallback trial creation also failed:', fallbackError);
       }
+    }
+  }
+
+  // Get order workflow state for regular orders
+  async getOrderWorkflowState(orderId: string): Promise<{ state: string; transitions: Array<{ toState: string; name?: string }> }> {
+    try {
+      console.log(`[GET ORDER WORKFLOW STATE] ===== STARTING =====`);
+      console.log(`[GET ORDER WORKFLOW STATE] Order ID: ${orderId}`);
+      
+      const order = await this.getOrder(orderId);
+      if (!order) {
+        console.log(`[GET ORDER WORKFLOW STATE] Order not found: ${orderId}`);
+        throw new Error('Order not found');
+      }
+
+      console.log(`[GET ORDER WORKFLOW STATE] Order data:`, order);
+      console.log(`[GET ORDER WORKFLOW STATE] Order current_state: ${order.current_state}`);
+      console.log(`[GET ORDER WORKFLOW STATE] Order status: ${order.status}`);
+      console.log(`[GET ORDER WORKFLOW STATE] Order serviceType: ${order.serviceDetails?.serviceType || order.serviceDetails?.service_type}`);
+
+      // Get current state - prioritize current_state over status for workflow accuracy
+      const currentState = order.current_state || order.status || 'created';
+      console.log(`[GET ORDER WORKFLOW STATE] Resolved currentState: ${currentState}`);
+
+      // Get valid transitions from workflow engine
+      console.log(`[GET ORDER WORKFLOW STATE] Getting transitions from workflow engine...`);
+      const transitions = await this.workflowEngine.getValidTransitions(currentState as any);
+      console.log(`[GET ORDER WORKFLOW STATE] Raw transitions:`, transitions);
+
+      const formattedTransitions = Array.isArray(transitions) ? transitions.map((t: any) => {
+        // Handle both string transitions and object transitions
+        if (typeof t === 'string') {
+          return {
+            toState: t,
+            name: t.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
+          };
+        }
+        return {
+          toState: t.toState || t,
+          name: t.name || (t.toState || t).toString().replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
+        };
+      }) : [];
+
+      console.log(`[GET ORDER WORKFLOW STATE] Formatted transitions:`, formattedTransitions);
+
+      const result = {
+        state: currentState,
+        transitions: formattedTransitions
+      };
+
+      console.log(`[GET ORDER WORKFLOW STATE] Final result:`, result);
+      console.log(`[GET ORDER WORKFLOW STATE] ===== COMPLETED =====`);
+      return result;
+    } catch (error) {
+      console.error(`[GET ORDER WORKFLOW STATE] ===== ERROR =====`);
+      console.error(`[GET ORDER WORKFLOW STATE] Error for order ${orderId}:`, error);
+      console.error(`[GET ORDER WORKFLOW STATE] ===== ERROR END =====`);
+      throw error;
+    }
+  }
+
+  // Add order history record
+  async addOrderHistory(orderId: string, fromState: string, toState: string, reason: string, changedBy?: string): Promise<void> {
+    try {
+      // Use NULL for system actions to avoid fake user references
+      const userId = changedBy || null;
+      
+      await this.db.query(
+        `INSERT INTO order_state_history (order_id, from_state, to_state, change_reason, changed_by, created_at)
+         VALUES ($1, $2, $3, $4, $5, NOW())`,
+        [orderId, fromState, toState, reason, userId]
+      );
+    } catch (error) {
+      console.error('Error adding order history:', error);
+    }
+  }
+
+  // Get order history for regular orders
+  async getOrderHistory(orderId: string): Promise<Array<Record<string, unknown>>> {
+    try {
+      const result = await this.db.query(
+        `SELECT 
+          osh.to_state as status,
+          osh.change_reason as reason,
+          osh.changed_by,
+          osh.created_at,
+          u.first_name,
+          u.last_name
+        FROM order_state_history osh
+        LEFT JOIN users u ON u.id = osh.changed_by
+        WHERE osh.order_id = $1
+        ORDER BY osh.created_at ASC`,
+        [orderId]
+      );
+
+      return result.rows.map(row => ({
+        id: `${row.status}_${row.created_at}`,
+        status: row.status,
+        reason: row.reason,
+        createdBy: row.created_by,
+        createdByName: `${row.first_name || ''} ${row.last_name || ''}`.trim() || 'System',
+        createdAt: row.created_at,
+        timestamp: row.created_at
+      }));
+    } catch (error) {
+      console.error('Failed to get order history:', error);
+      throw error;
     }
   }
 }

@@ -213,11 +213,13 @@ class RobustServer {
   private setupMiddleware(): void {
     // Security and performance
     this.app.use(helmetConfig);
+    
     const allowedOrigins = (process.env.CORS_ORIGIN?.split(',').filter(Boolean) || []).concat([
       'http://localhost:5173',
       'http://127.0.0.1:5173',
       'https://oms-client-x2nv.vercel.app'
     ]);
+    
     this.app.use(cors({
       origin: (origin, callback) => {
         // Allow requests with no origin (like mobile apps or curl requests)
@@ -248,10 +250,23 @@ class RobustServer {
       maxAge: 86400,
       optionsSuccessStatus: 204
     }));
+    
     this.app.options('*', cors());
     this.app.use(compression());
-    this.app.use(express.json({ limit: '10mb' }));
-    this.app.use(express.urlencoded({ extended: true }));
+    
+    // ✅ FIXED: Single express.json() middleware with proper error handling
+    this.app.use(express.json({ 
+      limit: '10mb',
+      strict: false,
+      verify: (req: any, res, buf, encoding) => {
+        // Handle empty bodies gracefully
+        if (buf.length === 0) {
+          req.body = {};
+        }
+      }
+    }));
+    
+    this.app.use(express.urlencoded({ extended: true, limit: '10mb' }));
     this.app.use(generalRateLimit);
 
     // Request tracking
@@ -292,6 +307,7 @@ class RobustServer {
     // API Routes
     this.app.use('/auth', authRateLimit, authRoutes);
     this.app.use('/orders', ordersRoutes);
+    this.app.use('/orders-templates', (await import('./Routes/orders-templates.routes.ts')).default);
     this.app.use('/admin', adminRouter);
     this.app.use('/admin/roles', rolesRouter);
     this.app.use('/user-management', userManagementRouter);
@@ -299,6 +315,7 @@ class RobustServer {
     this.app.use('/onboarding', onboardingRouter);
     this.app.use('/escalation', escalationRouter)
     this.app.use('/dashboard', dashboardRouter);
+    
     // FNO routes
     try {
       const fnoRouter = (await import('./Routes/fno.routes.ts')).default;
@@ -306,6 +323,7 @@ class RobustServer {
     } catch (e) {
       this.log('warn', 'Routes', 'FNO routes not available');
     }
+    
     this.app.use('/email', emailRouter);
     this.app.use('/fnos', fnoRouter);
     this.app.use('/workflow', workflowRouter);
@@ -316,42 +334,48 @@ class RobustServer {
     this.app.use('/customers', customerRouter);
     this.app.use('/payments', paymentRouter);
     
-    // Analytics routes (static imports)
-    const analyticsService = new AnalyticsService(pgPool as any, redis as any);
-    const analyticsController = createAnalyticsController(analyticsService);
-    this.app.use('/analytics', (req: any, res: any, next: any) => {
-      (req as any).analyticsController = analyticsController;
-      next();
-    }, analyticsRouter);
-    this.log('success', 'Routes', 'Analytics routes mounted');
-
-    // Real-time metrics routes (static imports)
-    const realtimeMetricsService = new RealtimeMetricsService(pgPool as any);
-    if (typeof (realtimeMetricsService as any).start === 'function') {
-      (realtimeMetricsService as any).start();
+    // Analytics routes
+    try {
+      const analyticsRouter = (await import('./Routes/analytics.routes.ts')).default;
+      const { AnalyticsService } = await import('./services/analytics.service.ts');
+      const analyticsService = new AnalyticsService(pgPool as any, redis as any);
+      const { createAnalyticsController } = await import('./Controllers/analytics.controller.ts');
+      const analyticsController = createAnalyticsController(analyticsService);
+      
+      this.app.use('/analytics', (req, res, next) => {
+        (req as any).analyticsController = analyticsController;
+        next();
+      }, analyticsRouter);
+      this.log('success', 'Routes', 'Analytics routes mounted');
+    } catch (e) {
+      this.log('warn', 'Routes', 'Analytics routes not available');
     }
-    this.app.use('/realtime', (req: any, res: any, next: any) => {
-      (req as any).realtimeMetricsService = realtimeMetricsService;
-      next();
-    }, realtimeMetricsRouter);
-    this.log('success', 'Routes', 'Realtime routes mounted');
 
-    // Start report cleanup job (runs every hour)
-    setInterval(async () => {
-      try {
-        const { ReportExportService } = await import('./services/report-export.service.ts');
-        const exportService = new ReportExportService(analyticsService);
-        await exportService.cleanupExpiredReports();
-        this.log('info', 'Cleanup', 'Expired reports cleaned up');
-      } catch (error: any) {
-        this.log('error', 'Cleanup', `Failed to cleanup reports: ${error.message}`);
+    // Real-time metrics routes
+    try {
+      const realtimeMetricsRouter = (await import('./Routes/realtime-metrics.routes.ts')).default;
+      const { RealtimeMetricsService } = await import('./services/realtime-metrics.service.ts');
+      const realtimeMetricsService = new RealtimeMetricsService(pgPool as any);
+      
+      if (typeof (realtimeMetricsService as any).start === 'function') {
+        (realtimeMetricsService as any).start();
       }
-    }, 60 * 60 * 1000); // Every hour
+      
+      this.app.use('/realtime', (req, res, next) => {
+        (req as any).realtimeMetricsService = realtimeMetricsService;
+        next();
+      }, realtimeMetricsRouter);
+      
+      this.log('success', 'Routes', 'Realtime routes mounted');
+    } catch (e) {
+      this.log('warn', 'Routes', 'Real-time metrics routes not available');
+    }
 
     // Trial management routes (proxy to microservice)
     try {
       const trialRouter = (await import('./Routes/trial.routes.ts')).default;
       this.app.use('/trials', trialRouter);
+      this.log('success', 'Routes', 'Trial routes mounted');
     } catch (e) {
       this.log('warn', 'Routes', 'Trial routes not available');
     }
@@ -360,6 +384,7 @@ class RobustServer {
     try {
       const systemSettingsRouter = (await import('./Routes/systemSettings.routes.ts')).default;
       this.app.use('/admin/settings', systemSettingsRouter);
+      this.log('success', 'Routes', 'System settings routes mounted');
     } catch (e) {
       this.log('warn', 'Routes', 'System settings routes not available');
     }
@@ -377,7 +402,7 @@ class RobustServer {
       });
     });
 
-    // Always-200 health ping (for service-to-service connectivity checks)
+    // Always-200 health ping
     this.app.get('/health/ping', (req, res) => {
       res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
     });
@@ -447,7 +472,7 @@ class RobustServer {
       if (healthyCount < totalCount) {
         this.log('warn', 'HealthCheck', `${healthyCount}/${totalCount} services healthy`);
       }
-    }, 15000); // Check every 15 seconds
+    }, 15000);
   }
 
   private setupGracefulShutdown(): void {
@@ -491,7 +516,7 @@ class RobustServer {
 
     try {
       this.setupMiddleware();
-      this.setupRoutes();
+      await this.setupRoutes();
       this.setupGracefulShutdown();
       
       await this.initializeServices();
@@ -505,7 +530,6 @@ class RobustServer {
         this.log('info', 'Endpoints', `http://localhost:${this.port}`);
         this.log('info', 'Health Check', `http://localhost:${this.port}/health`);
         this.log('info', 'Metrics', `http://localhost:${this.port}/metrics`);
-        
         
         const bootTime = Date.now() - this.state.startTime.getTime();
         this.log('success', 'System', `Ready in ${bootTime}ms`);
@@ -526,7 +550,7 @@ class RobustServer {
           this.log('warn', 'SLA Scheduler', e?.message || 'Failed to start');
         }
 
-        // Start escalation checker (SLA-driven interval)
+        // Start escalation checker
         try {
           const escService = new EscalationService(pgPool, mongoClient as any);
           const intervalMs = Number(process.env.ESCALATION_CHECK_INTERVAL_MS || 15 * 60 * 1000);
@@ -538,12 +562,12 @@ class RobustServer {
             }
           }, intervalMs);
           this.log('success', 'Escalations', `Escalation monitor started (every ${Math.round(intervalMs/60000)} min)`);
-          // Remove duplicate SLA monitor to prevent double-escalations; SLA emails handled by OnboardingSlaScheduler
         } catch (e: any) {
           this.log('warn', 'Escalations', e?.message || 'Failed to start');
         }
 
-        // Additional services can be initialized here if needed
+        // Trial services are now handled by the microservice
+        this.log('info', 'Trial Services', 'Trial services delegated to microservice');
       });
 
     } catch (error) {
